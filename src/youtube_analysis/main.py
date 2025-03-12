@@ -7,67 +7,6 @@ from .utils.logging import get_logger
 
 logger = get_logger("main")
 
-def display_results(crew_instance: YouTubeAnalysisCrew, result: str) -> None:
-    """
-    Display the results of the YouTube analysis.
-    
-    Args:
-        crew_instance: The YouTubeAnalysisCrew instance.
-        result: The result string from the crew execution.
-    """
-    print("\n\n########################")
-    print("## YouTube Analysis Results")
-    print("########################\n")
-    
-    # Display transcription results
-    print("## TRANSCRIPTION")
-    print("---------------")
-    transcription_task = crew_instance.fetch_transcription()
-    if transcription_task.output:
-        print(f"Task Summary: {transcription_task.output.summary}")
-        print("Transcription successfully fetched.")
-    else:
-        print("No transcription data available.")
-    print()
-    
-    # Display content summary
-    print("## CONTENT SUMMARY")
-    print("------------------")
-    summary_task = crew_instance.summarize_content()
-    if summary_task.output:
-        print(f"Task Summary: {summary_task.output.summary}")
-        print(f"{summary_task.output.raw}")
-    else:
-        print("No summary available.")
-    print()
-    
-    # Display content analysis
-    print("## CONTENT ANALYSIS")
-    print("------------------")
-    analysis_task = crew_instance.analyze_content()
-    if analysis_task.output:
-        print(f"Task Summary: {analysis_task.output.summary}")
-        print(f"{analysis_task.output.raw}")
-    else:
-        print("No analysis available.")
-    print()
-    
-    # Display action plan
-    print("## ACTION PLAN")
-    print("-------------")
-    action_plan_task = crew_instance.create_action_plan()
-    if action_plan_task.output:
-        print(f"Task Summary: {action_plan_task.output.summary}")
-        print(f"{action_plan_task.output.raw}")
-    else:
-        print("No action plan available.")
-    print()
-    
-    # Display final crew output
-    print("## COMPLETE ANALYSIS")
-    print("-------------------")
-    print(result)
-
 def run() -> Optional[str]:
     """
     Run the YouTube Analysis Crew with a user-provided YouTube URL.
@@ -98,12 +37,13 @@ def run() -> Optional[str]:
         inputs = {"youtube_url": youtube_url}
         crew_output = crew.kickoff(inputs=inputs)
         logger.info("Crew execution completed successfully")
+
+        # Display the crew output
+        print("\nCrew Output:")
+        print(crew_output)
         
         # Get the final result for return value
         result = str(crew_output)
-        
-        # Display the results
-        display_results(crew_instance, result)
         
         logger.info("Analysis completed")
         

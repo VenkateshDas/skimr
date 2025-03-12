@@ -2,7 +2,6 @@ from typing import List
 from crewai import Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, crew, task
 
-from crewai_tools import WebsiteSearchTool, ScrapeWebsiteTool
 from .tools import YouTubeTranscriptionTool
 from .utils.logging import get_logger
 
@@ -76,8 +75,7 @@ class YouTubeAnalysisCrew:
         return Agent(
             config=self.agents_config['analyzer_agent'],
             verbose=True,
-            llm=self.llm,
-            tools=[WebsiteSearchTool(), ScrapeWebsiteTool()]
+            llm=self.llm
         )
     
     @task

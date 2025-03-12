@@ -19,26 +19,21 @@ class YouTubeTranscriptionTool(BaseTool):
     name: str = "YouTube Transcription Tool"
     description: str = "Fetches the transcription of a YouTube video given its URL."
     
-    def _run(self, youtube_url: str, extract_only: bool = False) -> str:
+    def _run(self, youtube_url: str) -> str:
         """
         Fetches the transcription of a YouTube video given its URL.
         
         Args:
             youtube_url: The URL of the YouTube video.
-            extract_only: If True, only extract and return the video ID without fetching the transcription.
-            
+
         Returns:
-            The full transcription text of the video or the video ID if extract_only is True.
+            The full transcription text of the video.
         """
         logger.info(f"Fetching transcription for URL: {youtube_url}")
         try:
             # Extract video ID from the YouTube URL
             video_id = self._extract_video_id(youtube_url)
             logger.debug(f"Extracted video ID: {video_id}")
-            
-            # If extract_only is True, just return the video ID
-            if extract_only:
-                return f"Video ID: {video_id}"
             
             # Check if we have a cached transcription
             current_time = time.time()
@@ -48,23 +43,19 @@ class YouTubeTranscriptionTool(BaseTool):
                     logger.info(f"Using cached transcription for video ID: {video_id}")
                     return transcript_text
             
-            # Fetch the transcript using the newer fetch method
+            # Fetch the transcript directly using get_transcript
             logger.debug(f"Fetching transcript for video ID: {video_id}")
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            transcript_data = YouTubeTranscriptApi.get_transcript(video_id)
             
-            # Try to get the transcript in the default language first
-            try:
-                transcript = transcript_list.find_transcript(['en'])
-                transcript_data = transcript.fetch()
-            except Exception:
-                # If that fails, get the first available transcript
-                transcript = transcript_list.find_generated_transcript()
-                transcript_data = transcript.fetch()
+            # Manual extraction and formatting of transcript text
+            transcript_lines = []
+            for item in transcript_data:
+                if 'text' in item:
+                    transcript_lines.append(item['text'])
             
-            logger.debug(f"Fetched {len(transcript_data)} transcript segments")
+            # Join all transcript lines with line breaks
+            transcript_text = '\n'.join(transcript_lines)
             
-            # Combine all transcript parts into a single text
-            transcript_text = ' '.join([part['text'] for part in transcript_data])
             logger.info(f"Successfully fetched transcription with {len(transcript_text)} characters")
             
             # Cache the transcription
