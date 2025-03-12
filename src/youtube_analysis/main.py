@@ -1,19 +1,22 @@
 import sys
 import traceback
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Any, Union, Tuple
+from datetime import datetime
 
 from .crew import YouTubeAnalysisCrew
 from .utils.logging import get_logger
-from .utils.youtube_utils import get_transcript
+from .utils.youtube_utils import get_transcript, extract_video_id
 
 logger = get_logger("main")
 
-def run() -> Optional[str]:
+def run() -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """
     Run the YouTube Analysis Crew with a user-provided YouTube URL.
     
     Returns:
-        The analysis result as a string, or None if an error occurred.
+        A tuple containing:
+        - Dictionary with analysis results and metadata (or None if error)
+        - Error message (or None if successful)
     """
     logger.info("Starting YouTube Analysis Crew")
     print("## Welcome to YouTube Analysis Crew")
@@ -23,6 +26,10 @@ def run() -> Optional[str]:
         # Get YouTube URL from user
         youtube_url = input("Enter the YouTube URL to analyze: ")
         logger.info(f"User provided URL: {youtube_url}")
+
+        # Extract video ID for metadata
+        video_id = extract_video_id(youtube_url)
+        logger.info(f"Extracted video ID: {video_id}")
 
         # Get the transcript from the YouTube URL
         transcript = get_transcript(youtube_url)
@@ -48,37 +55,54 @@ def run() -> Optional[str]:
         print(crew_output)
         
         # Get the token usage of the crew output
-        token_usage = crew_output.token_usage
+        token_usage = crew_output.token_usage if hasattr(crew_output, 'token_usage') else None
         logger.info(f"Token usage: {token_usage}")
 
         # Get the final result for return value
         result = str(crew_output)
+        
+        # Extract individual task outputs
+        task_outputs = {}
+        for task in crew.tasks:
+            if hasattr(task, 'output') and task.output:
+                task_outputs[task.name] = task.output.raw
         
         logger.info("Analysis completed")
 
         # Print the token usage
         print(f"\nToken usage: {token_usage}")
         
-        return result
+        # Prepare comprehensive results dictionary
+        results = {
+            "video_id": video_id,
+            "youtube_url": youtube_url,
+            "transcript": transcript,
+            "output": result,
+            "task_outputs": task_outputs,
+            "token_usage": token_usage,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        
+        return results, None
     
     except KeyboardInterrupt:
         logger.warning("Process interrupted by user")
         print("\nProcess interrupted by user. Exiting...")
-        return None
+        return None, "Process interrupted by user"
     except ValueError as e:
         logger.error(f"Invalid input: {str(e)}")
         print(f"\nInvalid input: {str(e)}")
-        return None
+        return None, f"Invalid input: {str(e)}"
     except ConnectionError as e:
         logger.error(f"Connection error: {str(e)}")
         print(f"\nConnection error: {str(e)}")
         print("Please check your internet connection and try again.")
-        return None
+        return None, f"Connection error: {str(e)}"
     except Exception as e:
         logger.error(f"Error in run function: {str(e)}", exc_info=True)
         print(f"\nAn error occurred: {str(e)}")
         print("\nCheck the logs for more details.")
-        return None
+        return None, f"Error: {str(e)}"
 
 def train(n_iterations: int) -> None:
     """
@@ -129,8 +153,13 @@ def train(n_iterations: int) -> None:
 
 if __name__ == "__main__":
     try:
-        run()
+        results, error = run()
+        if error:
+            print(f"Error: {error}")
+            sys.exit(1)
+        sys.exit(0)
     except Exception as e:
         logger.critical(f"Unhandled exception in main: {str(e)}", exc_info=True)
         print(f"Critical error: {str(e)}")
-        print("Check the logs for more details.") 
+        print("Check the logs for more details.")
+        sys.exit(1) 
