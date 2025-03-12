@@ -1,22 +1,10 @@
-fetch_transcription:
-  description: >
-    Your task is to fetch the complete transcription of a YouTube video using the provided URL: {youtube_url}.
-    
-    Use the YouTube Transcription Tool to extract the full transcription text from the video.
-    Make sure to handle any errors gracefully and provide feedback if the transcription cannot be fetched.
-    
-    The transcription will be used by other agents for summarization and analysis, so it's crucial
-    to get the complete and accurate text.
-
-  expected_output: >
-    The complete transcription of the YouTube video in text format. If there are any errors or issues
-    with fetching the transcription, provide a clear explanation of what went wrong.
-
 summarize_content:
   description: >
     Your task is to create a comprehensive summary of the YouTube video based on its transcription.
     
-    Use the transcription from the Fetch Transcription task.
+    You will receive the transcription of the YouTube video as input.
+    Here is the transcription:
+    {transcript}
     
     Please create a well-structured summary with the following sections:
     1. Overall TL;DR (2-3 paragraphs)
@@ -34,7 +22,10 @@ analyze_content:
   description: >
     Your task is to analyze the YouTube video content based on its transcription and summary.
     
-    Use the transcription from the Fetch Transcription task.
+    You will receive the transcription of the YouTube video as input.
+    Here is the transcription:
+    {transcript}
+
     Use the summary from the Summarize Content task.
     
     Please analyze this content focusing on:
@@ -54,8 +45,11 @@ analyze_content:
 create_action_plan:
   description: >
     Your task is to create an actionable plan based on the YouTube video content.
-    
-    Use the transcription from the Fetch Transcription task.
+
+    Use the transcript provided by the user for a better understanding of the video content.
+    Here is the transcript:
+    {transcript}
+
     Use the summary from the Summarize Content task.
     Use the analysis from the Analyze Content task.
     
@@ -72,3 +66,31 @@ create_action_plan:
     A practical action plan with specific steps, resources, expected outcomes, and potential challenges.
     The plan should be immediately actionable and provide clear guidance for implementing the knowledge
     from the video. 
+
+write_report:
+  description: >
+    Your task is to write a report based on the YouTube video content in Markdown format.
+    
+    Use the transcript provided by the user for a better understanding of the video content.
+    Here is the transcript:
+    {transcript}
+
+    Use the summary from the Summarize Content task.
+    Use the analysis from the Analyze Content task.
+    Use the action plan from the Create Action Plan task.
+    
+    Please write a report with the following sections:
+    1. TL;DR of the video content
+    2. Key points and main ideas
+    3. Important details and examples mentioned
+    4. Analysis of the video content
+    5. Action plan based on the video content
+    6. Potential challenges they might face and how to overcome them
+    
+    Your report should be clear, concise, and capture all the essential information from the video.
+    Focus on maintaining the core message while eliminating redundancy and less important details.
+    
+  expected_output: >
+    A comprehensive, well-structured Markdown report of the YouTube video with the requested sections.
+    The report should be clear, concise, and capture all the essential information.
+    

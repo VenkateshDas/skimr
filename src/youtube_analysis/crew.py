@@ -22,30 +22,6 @@ class YouTubeAnalysisCrew:
         self.llm = ChatOpenAI(model_name=model_name, temperature=temperature)
     
     @agent
-    def fetcher_agent(self) -> Agent:
-        logger.debug("Creating fetcher agent")
-        return Agent(
-            config=self.agents_config['fetcher_agent'],
-            verbose=True,
-            llm=self.llm,
-            tools=[YouTubeTranscriptionTool()]
-        )
-    
-    @task
-    def fetch_transcription(self) -> Task:
-        """
-        Creates a task to fetch the transcription of a YouTube video.
-        
-        Returns:
-            Task: A CrewAI task for fetching the transcription.
-        """
-        logger.info("Creating fetch transcription task")
-        return Task(
-            config=self.tasks_config['fetch_transcription'],
-            agent=self.fetcher_agent()
-        )
-    
-    @agent
     def summarizer_agent(self) -> Agent:
         logger.debug("Creating summarizer agent")
         return Agent(
@@ -65,8 +41,7 @@ class YouTubeAnalysisCrew:
         logger.info("Creating summarize content task")
         return Task(
             config=self.tasks_config['summarize_content'],
-            agent=self.summarizer_agent(),
-            context=[self.fetch_transcription()]
+            agent=self.summarizer_agent()
         )
     
     @agent
@@ -90,7 +65,7 @@ class YouTubeAnalysisCrew:
         return Task(
             config=self.tasks_config['analyze_content'],
             agent=self.analyzer_agent(),
-            context=[self.fetch_transcription(), self.summarize_content()]
+            context=[self.summarize_content()]
         )
     
     @agent
@@ -114,7 +89,25 @@ class YouTubeAnalysisCrew:
         return Task(
             config=self.tasks_config['create_action_plan'],
             agent=self.advisor_agent(),
-            context=[self.fetch_transcription(), self.summarize_content(), self.analyze_content()]
+            context=[self.summarize_content(), self.analyze_content()]
+        )
+    
+    @agent
+    def report_writer_agent(self) -> Agent:
+        logger.debug("Creating report writer agent")
+        return Agent(
+            config=self.agents_config['report_writer_agent'],
+            verbose=True,
+            llm=self.llm
+        )
+    
+    @task
+    def write_report(self) -> Task:
+        logger.debug("Creating write report task")
+        return Task(
+            config=self.tasks_config['write_report'],
+            agent=self.report_writer_agent(),
+            context=[self.summarize_content(), self.analyze_content(), self.create_action_plan()]
         )
     
     @crew

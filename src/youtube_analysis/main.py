@@ -4,6 +4,7 @@ from typing import Optional, Dict, Any, Union
 
 from .crew import YouTubeAnalysisCrew
 from .utils.logging import get_logger
+from .utils.youtube_utils import get_transcript
 
 logger = get_logger("main")
 
@@ -22,6 +23,10 @@ def run() -> Optional[str]:
         # Get YouTube URL from user
         youtube_url = input("Enter the YouTube URL to analyze: ")
         logger.info(f"User provided URL: {youtube_url}")
+
+        # Get the transcript from the YouTube URL
+        transcript = get_transcript(youtube_url)
+        logger.info(f"Successfully fetched transcript with {len(transcript)} characters")
         
         # Create and run the crew
         logger.info("Creating YouTubeAnalysisCrew instance")
@@ -33,8 +38,8 @@ def run() -> Optional[str]:
         
         # Start the crew execution
         logger.info("Starting crew execution")
-        # Only pass the youtube_url in the inputs
-        inputs = {"youtube_url": youtube_url}
+        # Pass both the youtube_url and transcript in the inputs
+        inputs = {"youtube_url": youtube_url, "transcript": transcript}
         crew_output = crew.kickoff(inputs=inputs)
         logger.info("Crew execution completed successfully")
 
@@ -42,10 +47,17 @@ def run() -> Optional[str]:
         print("\nCrew Output:")
         print(crew_output)
         
+        # Get the token usage of the crew output
+        token_usage = crew_output.token_usage
+        logger.info(f"Token usage: {token_usage}")
+
         # Get the final result for return value
         result = str(crew_output)
         
         logger.info("Analysis completed")
+
+        # Print the token usage
+        print(f"\nToken usage: {token_usage}")
         
         return result
     
