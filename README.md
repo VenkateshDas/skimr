@@ -1,195 +1,146 @@
-# YouTube Analysis Crew
+# YouTube Video Analyzer
 
-A CrewAI implementation for analyzing YouTube videos. This project uses a team of AI agents to fetch, summarize, analyze, and create action plans based on YouTube video content.
+A powerful AI-powered application that analyzes YouTube videos to provide insights, summaries, and action plans.
 
 ## Features
 
-- **Transcription Fetching**: Automatically extracts the transcription from any YouTube video URL
-- **Content Summarization**: Creates a comprehensive summary of the video content
-- **In-depth Analysis**: Analyzes the video focusing on products, audience, value propositions, and technical details
-- **Actionable Advice**: Provides a practical action plan based on the video content
-- **Comprehensive Logging**: Detailed logging system for debugging and monitoring
-- **Transcription Caching**: Caches transcriptions to improve performance for repeated analyses
-- **Robust Error Handling**: Gracefully handles various error scenarios with specific error messages
+- **Video Classification**: Automatically categorize videos into topics like Technology, Business, Education, and more.
+- **Comprehensive Summary**: Get a TL;DR and key points to quickly understand the video's content.
+- **In-depth Analysis**: Understand the main concepts, target audience, and value propositions.
+- **Action Plan**: Receive practical, actionable steps to implement the knowledge from the video.
+- **Full Report**: Get a complete markdown report combining all analyses.
+- **Enhanced RAG Chatbot**: Chat with the video content and ask specific questions about the material. The chatbot is aware of the video title and description for more contextual responses.
+
+## Installation
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/yourusername/youtube-video-analyzer.git
+   cd youtube-video-analyzer
+   ```
+
+2. Create a virtual environment:
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
+
+3. Install the required packages:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. Set up your environment variables:
+   Create a `.env` file in the root directory with the following variables:
+   ```
+   OPENAI_API_KEY=your_openai_api_key
+   LLM_MODEL=gpt-4o-mini  # or gpt-4o
+   LLM_TEMPERATURE=0.2
+   LOG_LEVEL=INFO
+   YOUTUBE_API_KEY=your_youtube_api_key  # Optional, for fetching video metadata
+   ```
+
+## Usage
+
+### Web Application
+
+Run the Streamlit web application for video analysis:
+
+```bash
+streamlit run youtube_analysis_webapp.py
+```
+
+This will start the web application, which you can access at http://localhost:8501.
+
+### RAG Chatbot
+
+Run the RAG chatbot to chat with video content:
+
+```bash
+streamlit run youtube_rag_chatbot.py
+```
+
+This will start the chatbot application, which you can access at http://localhost:8501.
+
+### Using the Run Script
+
+For convenience, you can use the run script:
+
+```bash
+# Run the web application
+python run.py webapp
+
+# Run the RAG chatbot
+python run.py chatbot
+
+# Run the command line interface
+python run.py cli --url "https://youtu.be/your_video_id"
+```
+
+### Command Line Interface
+
+You can also use the command line interface directly:
+
+```bash
+python -m src.youtube_analysis --url "https://youtu.be/your_video_id"
+```
+
+Additional command line options:
+- `--mode`: Analysis mode (default: "full")
+- `--model`: LLM model to use (default: from environment)
+- `--temperature`: Temperature setting for the LLM (default: from environment)
+- `--verbose`: Enable verbose logging
+- `--output-format`: Output format (json, text, markdown)
+- `--output-dir`: Directory to save results
 
 ## Project Structure
 
-This project follows the CrewAI project structure pattern:
-
 ```
-youtube_analysis/
+youtube-video-analyzer/
 ├── src/
 │   └── youtube_analysis/
 │       ├── __init__.py
+│       ├── __main__.py
 │       ├── crew.py
 │       ├── main.py
 │       ├── config/
 │       │   ├── agents.yaml
 │       │   └── tasks.yaml
-│       ├── tools/
-│       │   ├── __init__.py
-│       │   └── youtube_tools.py
-│       ├── tests/
-│       │   ├── __init__.py
-│       │   ├── run_tests.py
-│       │   └── tools/
-│       │       ├── __init__.py
-│       │       ├── test_youtube_tools.py
-│       │       └── test_youtube_tools_unittest.py
 │       └── utils/
 │           ├── __init__.py
-│           └── logging.py
-├── setup.py
+│           ├── logging.py
+│           └── youtube_utils.py
+├── youtube_analysis_webapp.py
+├── youtube_rag_chatbot.py
+├── run.py
 ├── requirements.txt
-└── youtube_analysis_app.py
+└── README.md
 ```
 
-## Installation
+## How It Works
 
-1. Clone this repository
-2. Install the required dependencies:
+### Video Analysis
 
-```bash
-pip install -r requirements.txt
-```
+1. **Transcript Extraction**: The application extracts the transcript from the YouTube video.
+2. **Classification**: An AI agent classifies the video content into appropriate categories.
+3. **Summarization**: Another agent creates a comprehensive summary of the video content.
+4. **Analysis**: The content is analyzed to identify key concepts, target audience, and value propositions.
+5. **Action Plan**: Based on the analysis, an actionable plan is created.
+6. **Report Generation**: A complete report is generated combining all the analyses.
 
-3. Create a `.env` file in the root directory with your OpenAI API key:
+### Enhanced RAG Chatbot
 
-```
-OPENAI_API_KEY=your_openai_api_key_here
-```
+1. **Transcript Extraction**: The application extracts the transcript from the YouTube video.
+2. **Metadata Retrieval**: The system fetches the video title and description for context.
+3. **Text Chunking**: The transcript is split into smaller, manageable chunks.
+4. **Vector Embedding**: Each chunk is converted into a vector embedding using OpenAI's embedding model.
+5. **Agent Creation**: An AI agent is created with tools to search the transcript and access video metadata.
+6. **Contextual Responses**: When you ask a question, the agent determines whether to use its general knowledge or search the video content, providing contextually accurate answers.
 
-## Usage
+## Contributing
 
-Run the main script:
+Contributions are welcome! Please feel free to submit a Pull Request.
 
-```bash
-python youtube_analysis_app.py
+## License
 
-# Enable debug logging
-python youtube_analysis_app.py --debug
-
-# Enable logging to file
-python youtube_analysis_app.py --log-to-file
-
-# Train the crew for a specific number of iterations
-python youtube_analysis_app.py --train 5
-
-# Directly analyze a specific URL (coming soon)
-python youtube_analysis_app.py --url "https://youtu.be/TCGXT7ySco8"
-
-# Display version information
-python youtube_analysis_app.py --version
-```
-
-When prompted, enter a YouTube URL. The crew will then:
-
-1. Fetch the video transcription
-2. Generate a summary
-3. Analyze the content
-4. Create an actionable plan
-
-The final result will be displayed in the console.
-
-### Supported YouTube URL Formats
-
-The application supports the following YouTube URL formats:
-
-1. Standard format: `https://www.youtube.com/watch?v=TCGXT7ySco8`
-2. Short format: `https://youtu.be/TCGXT7ySco8`
-3. Mobile format: `https://m.youtube.com/watch?v=TCGXT7ySco8`
-4. Embed format: `https://www.youtube.com/embed/TCGXT7ySco8`
-5. Shared format: `https://www.youtube.com/v/TCGXT7ySco8`
-
-You can test the URL extraction and transcription fetching with the test script:
-
-```bash
-# Test URL extraction only
-python -m src.youtube_analysis.tests.tools.test_youtube_tools --extract-only
-
-# Test URL extraction and transcription fetching
-python -m src.youtube_analysis.tests.tools.test_youtube_tools
-
-# Test with a specific URL
-python -m src.youtube_analysis.tests.tools.test_youtube_tools --url "https://youtu.be/TCGXT7ySco8"
-```
-
-## Logging
-
-The application uses a comprehensive logging system that logs information to both the console and optionally to log files:
-
-- Log files are stored in the `logs/` directory (when enabled with `--log-to-file`)
-- Each log file is named with the module name and timestamp
-- Log levels can be controlled via the `LOG_LEVEL` environment variable or the `--debug` flag
-- Available log levels: DEBUG, INFO, WARNING, ERROR, CRITICAL (default: INFO)
-- Console output uses color-coding for different log levels for better readability
-
-To set a custom log level:
-
-```bash
-# In your .env file
-LOG_LEVEL=DEBUG
-
-# Or as an environment variable
-export LOG_LEVEL=DEBUG
-python youtube_analysis_app.py
-```
-
-## Performance Improvements
-
-The application includes several performance optimizations:
-
-1. **Transcription Caching**: Transcriptions are cached in memory to avoid redundant API calls when analyzing the same video multiple times. The cache expires after 1 hour.
-
-2. **Optimized Video ID Extraction**: The URL parsing uses an improved regex pattern that efficiently handles various YouTube URL formats in a single pass.
-
-3. **Efficient Logging**: The logging system prevents duplicate log handlers and uses a dictionary to track configured loggers, reducing memory usage and improving performance.
-
-4. **Type Hints**: The codebase uses type hints throughout, which improves code readability and enables better IDE support and static type checking.
-
-5. **Error Handling**: Specific exception types are caught and handled appropriately, providing better error messages and preventing application crashes.
-
-## Development
-
-### Customizing Agents and Tasks
-
-The agents and tasks are defined in YAML configuration files:
-
-- `src/youtube_analysis/config/agents.yaml`: Defines the roles, goals, and backstories of the agents
-- `src/youtube_analysis/config/tasks.yaml`: Defines the tasks assigned to each agent
-
-You can modify these files to customize the behavior of the crew.
-
-### Running Tests
-
-The project includes tests for various components. There are several ways to run the tests:
-
-```bash
-# Using the test runner script (recommended)
-python -m src.youtube_analysis.tests.run_tests
-
-# Run a specific test module with the test runner
-python -m src.youtube_analysis.tests.run_tests --module src.youtube_analysis.tests.tools.test_youtube_tools_unittest
-
-# Using unittest directly
-python -m unittest discover -s src/youtube_analysis/tests
-
-# Run a specific test module directly
-python -m src.youtube_analysis.tests.tools.test_youtube_tools_unittest
-
-# Run the command-line test script
-python -m src.youtube_analysis.tests.tools.test_youtube_tools
-```
-
-## Requirements
-
-- Python 3.8+
-- OpenAI API key
-- Internet connection to access YouTube
-
-## Notes
-
-- The YouTube transcription API may not work for all videos, especially those without captions
-- For long videos, the analysis may take some time to complete
-- The quality of the analysis depends on the quality of the video transcription
-- The transcription cache is in-memory only and will be cleared when the application is restarted 
+This project is licensed under the MIT License - see the LICENSE file for details. 

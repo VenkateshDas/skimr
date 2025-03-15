@@ -28,77 +28,62 @@ def ensure_log_dir() -> Path:
     log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir
 
-def setup_logger(
-    name: str, 
-    log_level: str = "INFO", 
-    log_to_file: bool = False, 
-    log_format: Optional[str] = None, 
-    color_console: bool = True
-) -> logging.Logger:
+def setup_logger(name: str, log_level: str = "INFO") -> logging.Logger:
     """
-    Set up a logger with the specified name and configuration.
+    Set up a logger with colorful console output.
     
     Args:
-        name: The name of the logger.
-        log_level: The log level (DEBUG, INFO, WARNING, ERROR, CRITICAL).
-        log_to_file: Whether to log to a file. Default is False.
-        log_format: The log format.
-        color_console: Whether to use colored output in the console.
+        name: The name of the logger
+        log_level: The log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         
     Returns:
-        The configured logger.
+        A configured logger instance
     """
-    # Check if this logger has already been configured
-    if name in CONFIGURED_LOGGERS:
-        return CONFIGURED_LOGGERS[name]
+    # Get log level from environment variable if not provided
+    log_level = log_level.upper()
     
-    # Get the log level
-    level = LOG_LEVELS.get(log_level.upper(), logging.INFO)
-    
-    # Create a logger
+    # Create logger
     logger = logging.getLogger(name)
-    logger.setLevel(level)
     
-    # Clear any existing handlers
-    logger.handlers = []
-    
-    # Prevent propagation to avoid duplicate logs
-    logger.propagate = False
-    
-    # Set the log format
-    file_formatter = logging.Formatter(log_format or DEFAULT_LOG_FORMAT)
-    
-    # Add console handler with optional color
-    console_handler = logging.StreamHandler(sys.stdout)
-    if color_console:
-        # Color configuration
-        color_formatter = colorlog.ColoredFormatter(
-            DEFAULT_COLOR_LOG_FORMAT,
-            log_colors={
-                'DEBUG': 'cyan',
-                'INFO': 'green',
-                'WARNING': 'yellow',
-                'ERROR': 'red',
-                'CRITICAL': 'red,bg_white',
-            }
-        )
-        console_handler.setFormatter(color_formatter)
+    # Ensure log_level is valid
+    if log_level in LOG_LEVELS:
+        logger.setLevel(LOG_LEVELS[log_level])
     else:
-        console_handler.setFormatter(file_formatter)
+        logger.setLevel(logging.INFO)
+        logger.warning(f"Invalid log level: {log_level}. Using INFO instead.")
     
+    # Remove existing handlers
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+    
+    # Create console handler with color formatting
+    console_handler = logging.StreamHandler()
+    if log_level in LOG_LEVELS:
+        console_handler.setLevel(LOG_LEVELS[log_level])
+    else:
+        console_handler.setLevel(logging.INFO)
+    
+    # Define color scheme
+    colors = {
+        'DEBUG': 'cyan',
+        'INFO': 'green',
+        'WARNING': 'yellow',
+        'ERROR': 'red',
+        'CRITICAL': 'red,bg_white',
+    }
+    
+    # Create formatter with colors
+    formatter = colorlog.ColoredFormatter(
+        "%(log_color)s%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        log_colors=colors
+    )
+    
+    # Add formatter to handler
+    console_handler.setFormatter(formatter)
+    
+    # Add handler to logger
     logger.addHandler(console_handler)
-    
-    # Add file handler if requested
-    if log_to_file:
-        log_dir = ensure_log_dir()
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_file = log_dir / f"{name}_{timestamp}.log"
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setFormatter(file_formatter)
-        logger.addHandler(file_handler)
-    
-    # Store the configured logger
-    CONFIGURED_LOGGERS[name] = logger
     
     return logger
 
@@ -109,15 +94,19 @@ def get_log_level() -> str:
 # Create a default logger for the package
 default_logger = setup_logger("youtube_analysis", get_log_level())
 
-def get_logger(name: str) -> logging.Logger:
+def get_logger(name: str, log_level: Optional[str] = None) -> logging.Logger:
     """
-    Get a logger with the specified name.
+    Get a logger with the specified name and log level.
     
     Args:
-        name: The name of the logger.
+        name: The name of the logger
+        log_level: The log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         
     Returns:
-        The configured logger.
+        A configured logger instance
     """
-    full_name = f"youtube_analysis.{name}"
-    return setup_logger(full_name, get_log_level()) 
+    # Get log level from environment variable if not provided
+    if log_level is None:
+        log_level = os.environ.get("LOG_LEVEL", "INFO")
+    
+    return setup_logger(name, log_level) 

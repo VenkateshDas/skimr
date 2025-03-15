@@ -1,3 +1,28 @@
+classify_video:
+  description: >
+    Your task is to classify the YouTube video content based on its transcription.
+    
+    You will receive the transcription of the YouTube video as input.
+    Here is the transcription:
+    {transcript}
+    
+    Please classify this video into one of the following categories:
+    - Technology
+    - Business
+    - Education
+    - Health & Wellness
+    - Science
+    - Finance
+    - Personal Development
+    
+    Provide a brief explanation for your classification choice, highlighting key terms or themes
+    from the transcript that support your decision. If the video spans multiple categories,
+    choose the most dominant one and mention the secondary categories in your explanation.
+
+  expected_output: >
+    A clear classification of the video into one of the specified categories, along with
+    a brief explanation justifying the classification based on the transcript content.
+
 summarize_content:
   description: >
     Your task is to create a comprehensive summary of the YouTube video based on its transcription.
@@ -75,20 +100,23 @@ write_report:
     Here is the transcript:
     {transcript}
 
+    Use the classification from the Classify Video task.
     Use the summary from the Summarize Content task.
     Use the analysis from the Analyze Content task.
     Use the action plan from the Create Action Plan task.
     
     Please write a report with the following sections:
-    1. TL;DR of the video content
-    2. Key points and main ideas
-    3. Important details and examples mentioned
-    4. Analysis of the video content
-    5. Action plan based on the video content
-    6. Potential challenges they might face and how to overcome them
+    1. Video Classification
+    2. TL;DR of the video content
+    3. Key points and main ideas
+    4. Important details and examples mentioned
+    5. Analysis of the video content
+    6. Action plan based on the video content
+    7. Potential challenges they might face and how to overcome them
     
     Your report should be clear, concise, and capture all the essential information from the video.
     Focus on maintaining the core message while eliminating redundancy and less important details.
+    Format the report in Markdown for better readability.
     
   expected_output: >
     A comprehensive, well-structured Markdown report of the YouTube video with the requested sections.

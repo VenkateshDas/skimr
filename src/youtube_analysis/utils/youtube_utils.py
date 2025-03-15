@@ -1,86 +1,209 @@
 """Utility functions for YouTube video analysis."""
 
-from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 from urllib.parse import urlparse, parse_qs
 import re
 import time
-from typing import Dict, Optional
+import os
+import logging
+import hashlib
+from typing import Dict, Optional, Any, List
+from datetime import datetime, timedelta
+import json
+from pathlib import Path
+import requests
+
+try:
+    from pytube import YouTube
+    PYTUBE_AVAILABLE = True
+except ImportError:
+    PYTUBE_AVAILABLE = False
 
 from .logging import get_logger
 
-logger = get_logger("utils.youtube")
+# Configure logging
+logger = logging.getLogger(__name__)
 
 # Simple cache for transcriptions to avoid redundant API calls
 # Key: video_id, Value: (timestamp, transcript_text)
 TRANSCRIPTION_CACHE: Dict[str, tuple] = {}
 CACHE_EXPIRY = 3600  # Cache expiry in seconds (1 hour)
 
-def extract_video_id(youtube_url: str) -> str:
+def extract_video_id(url: str) -> str:
     """
-    Extracts the video ID from a YouTube URL.
+    Extract the video ID from a YouTube URL.
     
     Args:
-        youtube_url: The URL of the YouTube video.
+        url: The YouTube URL
         
     Returns:
-        The video ID.
+        The extracted video ID
         
     Raises:
-        ValueError: If the URL is invalid or the video ID cannot be extracted.
+        ValueError: If the URL is not a valid YouTube URL
     """
-    logger.debug(f"Extracting video ID from URL: {youtube_url}")
+    # Regular expression patterns for different YouTube URL formats
+    patterns = [
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})',
+        r'(?:https?:\/\/)?(?:www\.)?youtu\.be\/([a-zA-Z0-9_-]{11})',
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([a-zA-Z0-9_-]{11})',
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/v\/([a-zA-Z0-9_-]{11})',
+    ]
     
-    # Improved regex pattern to extract video ID from various YouTube URL formats
-    youtube_regex = r'(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?.*v=|embed\/|v\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})'
+    # Try each pattern
+    for pattern in patterns:
+        match = re.match(pattern, url)
+        if match:
+            return match.group(1)
     
-    match = re.search(youtube_regex, youtube_url)
-    if match:
-        video_id = match.group(1)
-        logger.debug(f"Extracted video ID using regex: {video_id}")
-        return video_id
-    
-    # If regex fails, fall back to the URL parsing method
-    logger.debug("Regex extraction failed, falling back to URL parsing method")
-    parsed_url = urlparse(youtube_url)
-    
-    # Handle different URL formats
-    if parsed_url.netloc == 'youtu.be':
-        # Short URL format: https://youtu.be/VIDEO_ID
-        video_id = parsed_url.path.lstrip('/')
-        logger.debug(f"Extracted video ID from youtu.be URL: {video_id}")
-    elif parsed_url.netloc in ('www.youtube.com', 'youtube.com', 'm.youtube.com'):
-        # Standard URL format: https://www.youtube.com/watch?v=VIDEO_ID
-        if parsed_url.path == '/watch':
-            query_params = parse_qs(parsed_url.query)
-            if 'v' in query_params:
-                video_id = query_params['v'][0]
-                logger.debug(f"Extracted video ID from youtube.com/watch URL: {video_id}")
-            else:
-                logger.error("Could not extract video ID from URL: Missing 'v' parameter")
-                raise ValueError("Could not extract video ID from URL: Missing 'v' parameter")
-        # Shared URL format: https://www.youtube.com/v/VIDEO_ID
-        elif parsed_url.path.startswith('/v/'):
-            video_id = parsed_url.path.split('/v/')[1]
-            logger.debug(f"Extracted video ID from youtube.com/v/ URL: {video_id}")
-        # Embed URL format: https://www.youtube.com/embed/VIDEO_ID
-        elif parsed_url.path.startswith('/embed/'):
-            video_id = parsed_url.path.split('/embed/')[1]
-            logger.debug(f"Extracted video ID from youtube.com/embed/ URL: {video_id}")
-        else:
-            logger.error(f"Unsupported YouTube URL format: {youtube_url}")
-            raise ValueError(f"Unsupported YouTube URL format: {youtube_url}")
-    else:
-        logger.error(f"Not a valid YouTube URL: {youtube_url}")
-        raise ValueError(f"Not a valid YouTube URL: {youtube_url}")
-    
-    # Validate video ID format (should be 11 characters)
-    if not video_id or len(video_id) != 11:
-        logger.error(f"Invalid video ID format: {video_id}")
-        raise ValueError(f"Invalid video ID format: {video_id}")
-        
-    return video_id
+    # If no pattern matches, raise an error
+    raise ValueError(f"Could not extract video ID from URL: {url}")
 
 def get_transcript(youtube_url: str) -> str:
+    """
+    Get the transcript of a YouTube video.
+    
+    Args:
+        youtube_url: The URL of the YouTube video
+        
+    Returns:
+        The transcript as a string
+        
+    Raises:
+        ValueError: If the transcript cannot be retrieved
+    """
+    try:
+        # Extract video ID
+        video_id = extract_video_id(youtube_url)
+        
+        # Check if transcript is cached
+        cached_transcript = get_cached_transcription(video_id)
+        if cached_transcript:
+            logger.info(f"Using cached transcript for video {video_id}")
+            return cached_transcript
+        
+        # Fetch transcript
+        logger.info(f"Fetching transcript for video {video_id}")
+        transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+        
+        # Combine transcript segments
+        transcript_text = " ".join([item['text'] for item in transcript_list])
+        
+        # Cache the transcript
+        cache_transcription(video_id, transcript_text)
+        
+        return transcript_text
+        
+    except (TranscriptsDisabled, NoTranscriptFound) as e:
+        error_msg = f"No transcript available for this video: {str(e)}"
+        logger.error(error_msg)
+        raise ValueError(error_msg)
+    except Exception as e:
+        error_msg = f"Error retrieving transcript: {str(e)}"
+        logger.error(error_msg)
+        raise ValueError(error_msg)
+
+def get_cache_dir() -> Path:
+    """
+    Get the cache directory for transcriptions.
+    
+    Returns:
+        Path to the cache directory
+    """
+    # Get cache directory from environment variable or use default
+    cache_dir = os.environ.get("TRANSCRIPT_CACHE_DIR", None)
+    
+    if not cache_dir:
+        # Use default cache directory in user's home directory
+        home_dir = Path.home()
+        cache_dir = home_dir / ".youtube_analysis" / "cache"
+    else:
+        cache_dir = Path(cache_dir)
+    
+    # Create directory if it doesn't exist
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    
+    return cache_dir
+
+def get_cache_key(video_id: str) -> str:
+    """
+    Generate a cache key for a video ID.
+    
+    Args:
+        video_id: The YouTube video ID
+        
+    Returns:
+        A cache key as an MD5 hash
+    """
+    # Create an MD5 hash of the video ID
+    return hashlib.md5(video_id.encode()).hexdigest()
+
+def get_cached_transcription(video_id: str) -> Optional[str]:
+    """
+    Get a cached transcription if available and not expired.
+    
+    Args:
+        video_id: The YouTube video ID
+        
+    Returns:
+        The cached transcription or None if not available
+    """
+    try:
+        cache_dir = get_cache_dir()
+        cache_key = get_cache_key(video_id)
+        cache_file = cache_dir / f"{cache_key}.json"
+        
+        # Check if cache file exists
+        if not cache_file.exists():
+            return None
+        
+        # Read cache file
+        with open(cache_file, 'r') as f:
+            cache_data = json.load(f)
+        
+        # Check if cache is expired (default: 24 hours)
+        cache_expiration_hours = int(os.environ.get("CACHE_EXPIRATION_HOURS", 24))
+        timestamp = datetime.fromisoformat(cache_data['timestamp'])
+        if datetime.now() - timestamp > timedelta(hours=cache_expiration_hours):
+            logger.info(f"Cache expired for video {video_id}")
+            return None
+        
+        return cache_data['transcript']
+        
+    except Exception as e:
+        logger.warning(f"Error reading cache for video {video_id}: {str(e)}")
+        return None
+
+def cache_transcription(video_id: str, transcript: str) -> None:
+    """
+    Cache a transcription for future use.
+    
+    Args:
+        video_id: The YouTube video ID
+        transcript: The transcription to cache
+    """
+    try:
+        cache_dir = get_cache_dir()
+        cache_key = get_cache_key(video_id)
+        cache_file = cache_dir / f"{cache_key}.json"
+        
+        # Create cache data
+        cache_data = {
+            'video_id': video_id,
+            'transcript': transcript,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        # Write cache file
+        with open(cache_file, 'w') as f:
+            json.dump(cache_data, f)
+        
+        logger.info(f"Cached transcript for video {video_id}")
+        
+    except Exception as e:
+        logger.warning(f"Error caching transcript for video {video_id}: {str(e)}")
+
+def get_transcript_from_url(youtube_url: str) -> str:
     """
     Fetches the transcription of a YouTube video given its URL.
     
@@ -127,4 +250,57 @@ def get_transcript(youtube_url: str) -> str:
     except Exception as e:
         error_message = f"Error fetching transcription: {str(e)}"
         logger.error(error_message, exc_info=True)
-        raise ValueError(error_message) 
+        raise ValueError(error_message)
+
+def get_video_info(video_id: str) -> Dict[str, Any]:
+    """
+    Get information about a YouTube video (title, description, etc.).
+    
+    Args:
+        video_id: The YouTube video ID
+        
+    Returns:
+        A dictionary containing video information
+    """
+    video_info = {
+        "title": "Unknown",
+        "description": "No description available"
+    }
+    
+    try:
+        if PYTUBE_AVAILABLE:
+            try:
+                # Use pytube to get video info
+                yt = YouTube(f"https://www.youtube.com/watch?v={video_id}")
+                video_info["title"] = yt.title if yt.title else "Unknown"
+                video_info["description"] = yt.description if yt.description else "No description available"
+                logger.info(f"Retrieved video info for {video_id} using pytube")
+            except Exception as e:
+                logger.error(f"Error retrieving video info with pytube: {str(e)}", exc_info=True)
+                # Continue to try the YouTube Data API as fallback
+        
+        # Fallback to YouTube Data API if available or if pytube failed
+        api_key = os.environ.get("YOUTUBE_API_KEY")
+        if api_key and (not PYTUBE_AVAILABLE or video_info["title"] == "Unknown"):
+            url = f"https://www.googleapis.com/youtube/v3/videos?id={video_id}&key={api_key}&part=snippet"
+            response = requests.get(url)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("items") and len(data["items"]) > 0:
+                    snippet = data["items"][0]["snippet"]
+                    video_info["title"] = snippet.get("title", "Unknown")
+                    video_info["description"] = snippet.get("description", "No description available")
+                    logger.info(f"Retrieved video info for {video_id} using YouTube Data API")
+                else:
+                    logger.warning(f"No video data found for {video_id} using YouTube Data API")
+            else:
+                logger.warning(f"Failed to retrieve video info from YouTube Data API: {response.status_code}")
+        
+        # If we still don't have a title, use a generic one with the video ID
+        if video_info["title"] == "Unknown":
+            video_info["title"] = f"YouTube Video ({video_id})"
+            
+    except Exception as e:
+        logger.error(f"Error retrieving video info for {video_id}: {str(e)}", exc_info=True)
+    
+    return video_info 
