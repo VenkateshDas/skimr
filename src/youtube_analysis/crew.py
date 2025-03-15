@@ -40,7 +40,8 @@ class YouTubeAnalysisCrew:
         logger.info("Creating classify video task")
         return Task(
             config=self.tasks_config['classify_video'],
-            agent=self.classifier_agent()
+            agent=self.classifier_agent(),
+            async_execution=True
         )
     
     @agent
@@ -64,7 +65,7 @@ class YouTubeAnalysisCrew:
         return Task(
             config=self.tasks_config['summarize_content'],
             agent=self.summarizer_agent(),
-            context=[self.classify_video()]
+            async_execution=True
         )
     
     @agent
@@ -88,7 +89,7 @@ class YouTubeAnalysisCrew:
         return Task(
             config=self.tasks_config['analyze_content'],
             agent=self.analyzer_agent(),
-            context=[self.classify_video(), self.summarize_content()]
+            async_execution=True
         )
     
     @agent
@@ -112,7 +113,7 @@ class YouTubeAnalysisCrew:
         return Task(
             config=self.tasks_config['create_action_plan'],
             agent=self.advisor_agent(),
-            context=[self.classify_video(), self.summarize_content(), self.analyze_content()]
+            async_execution=True
         )
     
     @agent

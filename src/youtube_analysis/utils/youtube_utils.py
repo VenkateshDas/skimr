@@ -84,7 +84,7 @@ def get_transcript(youtube_url: str) -> str:
         
         # Fetch transcript
         logger.info(f"Fetching transcript for video {video_id}")
-        transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+        transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=["en", "de", "ta"])
         
         # Combine transcript segments
         transcript_text = " ".join([item['text'] for item in transcript_list])
@@ -263,44 +263,73 @@ def get_video_info(video_id: str) -> Dict[str, Any]:
         A dictionary containing video information
     """
     video_info = {
-        "title": "Unknown",
+        "title": f"YouTube Video ({video_id})",
         "description": "No description available"
     }
     
     try:
+        # Try YouTube Data API first if available
+        api_key = os.environ.get("YOUTUBE_API_KEY")
+        if api_key:
+            url = f"https://www.googleapis.com/youtube/v3/videos?id={video_id}&key={api_key}&part=snippet"
+            try:
+                response = requests.get(url, timeout=10)
+                if response.status_code == 200:
+                    data = response.json()
+                    if data.get("items") and len(data["items"]) > 0:
+                        snippet = data["items"][0]["snippet"]
+                        video_info["title"] = snippet.get("title", f"YouTube Video ({video_id})")
+                        video_info["description"] = snippet.get("description", "No description available")
+                        logger.info(f"Retrieved video info for {video_id} using YouTube Data API")
+                        return video_info
+                    else:
+                        logger.warning(f"No video data found for {video_id} using YouTube Data API")
+                else:
+                    logger.warning(f"Failed to retrieve video info from YouTube Data API: {response.status_code}")
+            except Exception as e:
+                logger.warning(f"Error using YouTube Data API: {str(e)}")
+        
+        # Fallback to pytube if API key not available or API request failed
         if PYTUBE_AVAILABLE:
             try:
-                # Use pytube to get video info
+                # Use pytube to get video info with error handling
                 yt = YouTube(f"https://www.youtube.com/watch?v={video_id}")
-                video_info["title"] = yt.title if yt.title else "Unknown"
-                video_info["description"] = yt.description if yt.description else "No description available"
+                
+                # Safely get title
+                try:
+                    if hasattr(yt, 'title') and yt.title:
+                        video_info["title"] = yt.title
+                except Exception as e:
+                    logger.warning(f"Error retrieving title with pytube: {str(e)}")
+                
+                # Safely get description
+                try:
+                    if hasattr(yt, 'description') and yt.description:
+                        video_info["description"] = yt.description
+                except Exception as e:
+                    logger.warning(f"Error retrieving description with pytube: {str(e)}")
+                
                 logger.info(f"Retrieved video info for {video_id} using pytube")
             except Exception as e:
-                logger.error(f"Error retrieving video info with pytube: {str(e)}", exc_info=True)
-                # Continue to try the YouTube Data API as fallback
-        
-        # Fallback to YouTube Data API if available or if pytube failed
-        api_key = os.environ.get("YOUTUBE_API_KEY")
-        if api_key and (not PYTUBE_AVAILABLE or video_info["title"] == "Unknown"):
-            url = f"https://www.googleapis.com/youtube/v3/videos?id={video_id}&key={api_key}&part=snippet"
-            response = requests.get(url)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("items") and len(data["items"]) > 0:
-                    snippet = data["items"][0]["snippet"]
-                    video_info["title"] = snippet.get("title", "Unknown")
-                    video_info["description"] = snippet.get("description", "No description available")
-                    logger.info(f"Retrieved video info for {video_id} using YouTube Data API")
-                else:
-                    logger.warning(f"No video data found for {video_id} using YouTube Data API")
-            else:
-                logger.warning(f"Failed to retrieve video info from YouTube Data API: {response.status_code}")
-        
-        # If we still don't have a title, use a generic one with the video ID
-        if video_info["title"] == "Unknown":
-            video_info["title"] = f"YouTube Video ({video_id})"
-            
+                logger.warning(f"Error retrieving video info with pytube: {str(e)}")
+                
     except Exception as e:
         logger.error(f"Error retrieving video info for {video_id}: {str(e)}", exc_info=True)
     
-    return video_info 
+    return video_info
+
+def validate_youtube_url(url: str) -> bool:
+    """
+    Validate if the provided URL is a valid YouTube URL.
+    
+    Args:
+        url: The URL to validate
+        
+    Returns:
+        True if the URL is valid, False otherwise
+    """
+    if not url:
+        return False
+    
+    youtube_pattern = r'(https?://)?(www\.)?(youtube\.com/watch\?v=|youtu\.be/)[a-zA-Z0-9_-]+'
+    return bool(re.match(youtube_pattern, url)) 

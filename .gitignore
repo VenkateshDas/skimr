@@ -50,4 +50,11 @@ ehthumbs.db
 Thumbs.db
 
 # Project specific
-db/ 
+db/
+
+# Ignore YouTube analysis cache directory
+.youtube_analysis/
+
+# Ignore analysis cache directory
+~/.youtube_analysis/analysis_cache/
+~/.youtube_analysis/cache/
