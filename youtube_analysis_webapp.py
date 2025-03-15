@@ -6,6 +6,7 @@ import streamlit as st
 from typing import Optional, Dict, Any, Tuple, List, Sequence, TypedDict, Annotated
 import pandas as pd
 from datetime import datetime
+from youtube_transcript_api import YouTubeTranscriptApi
 
 # Add the src directory to the path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '.')))
@@ -47,8 +48,9 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Custom CSS for better styling
-st.markdown("""
+def load_css():
+    """Load custom CSS for better styling."""
+    st.markdown("""
 <style>
     /* Global Styles */
     .stApp {
@@ -331,6 +333,29 @@ st.markdown("""
         border-bottom-left-radius: 4px;
     }
     
+    /* Streamlit chat specific styling */
+    [data-testid="stChatMessage"] {
+        margin-bottom: 1rem;
+    }
+    
+    /* Make sure the chat input is always visible at the bottom */
+    [data-testid="stChatInput"] {
+        position: sticky;
+        bottom: 0;
+        background-color: #121212;
+        padding: 1rem 0;
+        z-index: 100;
+        margin-top: 1rem;
+        border-top: 1px solid #333333;
+    }
+    
+    /* Ensure the chat container scrolls properly */
+    [data-testid="stVerticalBlock"] > div:has([data-testid="stChatMessage"]) {
+        overflow-y: auto;
+        max-height: 60vh;
+        padding-right: 1rem;
+    }
+    
     @media (max-width: 768px) {
         .feature-grid {
             grid-template-columns: 1fr;
@@ -598,6 +623,15 @@ def setup_chat_for_video(youtube_url: str, transcript: str) -> Dict[str, Any]:
         # Create thread ID for persistence
         thread_id = f"thread_{video_id}_{int(time.time())}"
         
+        # Initialize chat messages with a welcome message
+        if "chat_messages" not in st.session_state or not st.session_state.chat_messages:
+            st.session_state.chat_messages = [
+                {
+                    "role": "assistant", 
+                    "content": f"Hello! I'm your AI assistant for the video \"{video_info.get('title', 'this YouTube video')}\". Ask me any questions about the content, and I'll do my best to answer based on the transcript."
+                }
+            ]
+        
         # Return chat setup details
         return {
             "video_id": video_id,
@@ -611,12 +645,6 @@ def setup_chat_for_video(youtube_url: str, transcript: str) -> Dict[str, Any]:
         logger.error(f"Error setting up chat: {str(e)}")
         return None
 
-def display_chat_messages():
-    """Display chat messages from session state."""
-    for message in st.session_state.chat_messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
 def display_chat_interface(chat_details: Dict[str, Any]):
     """
     Display the chat interface for interacting with the video content.
@@ -628,57 +656,152 @@ def display_chat_interface(chat_details: Dict[str, Any]):
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = []
     
-    # Display chat messages
-    display_chat_messages()
+    # Create a container for the chat interface
+    chat_container = st.container()
     
-    # Chat input
-    if prompt := st.chat_input("Ask a question about the video...", key="chat_input"):
-        # Add user message to chat history
-        st.session_state.chat_messages.append({"role": "user", "content": prompt})
+    # Create a container for the input at the bottom
+    input_container = st.container()
+    
+    # Chat input (at the bottom)
+    with input_container:
+        prompt = st.chat_input("Ask a question about the video...", key="chat_input")
+    
+    # Display chat messages in the chat container
+    with chat_container:
+        # Display existing messages
+        for message in st.session_state.chat_messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
         
-        # Display user message
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        
-        # Get AI response
-        with st.chat_message("assistant"):
-            message_placeholder = st.empty()
+        # Handle new message
+        if prompt:
+            # Add user message to chat history
+            st.session_state.chat_messages.append({"role": "user", "content": prompt})
             
-            try:
-                # Get the agent and thread ID
-                agent = chat_details["agent"]
-                thread_id = chat_details["thread_id"]
+            # Display user message
+            with st.chat_message("user"):
+                st.markdown(prompt)
+            
+            # Get AI response
+            with st.chat_message("assistant"):
+                message_placeholder = st.empty()
                 
-                # Convert previous messages to the format expected by LangGraph
-                messages = []
-                for msg in st.session_state.chat_messages:
-                    if msg["role"] == "user":
-                        messages.append(HumanMessage(content=msg["content"]))
-                    elif msg["role"] == "assistant":
-                        messages.append(AIMessage(content=msg["content"]))
-                
-                # Add the current user message if not already added
-                if not messages or messages[-1].type != "human":
-                    messages.append(HumanMessage(content=prompt))
-                
-                # Invoke the agent with the thread ID for memory persistence
-                response = agent.invoke(
-                    {"messages": messages},
-                    config={"configurable": {"thread_id": thread_id}},
-                )
-                
-                # Extract the final answer
-                final_message = response["messages"][-1]
-                answer = final_message.content
-                
-                # Display response
-                message_placeholder.markdown(answer)
-                
-                # Add AI response to chat history
-                st.session_state.chat_messages.append({"role": "assistant", "content": answer})
-            except Exception as e:
-                logger.error(f"Error getting chat response: {str(e)}")
-                message_placeholder.markdown("Sorry, I encountered an error while processing your question. Please try again.")
+                try:
+                    # Get the agent and thread ID
+                    agent = chat_details["agent"]
+                    thread_id = chat_details["thread_id"]
+                    
+                    # Convert previous messages to the format expected by LangGraph
+                    messages = []
+                    for msg in st.session_state.chat_messages:
+                        if msg["role"] == "user":
+                            messages.append(HumanMessage(content=msg["content"]))
+                        elif msg["role"] == "assistant":
+                            messages.append(AIMessage(content=msg["content"]))
+                    
+                    # Add the current user message if not already added
+                    if not messages or messages[-1].type != "human":
+                        messages.append(HumanMessage(content=prompt))
+                    
+                    # Invoke the agent with the thread ID for memory persistence
+                    response = agent.invoke(
+                        {"messages": messages},
+                        config={"configurable": {"thread_id": thread_id}},
+                    )
+                    
+                    # Extract the final answer
+                    final_message = response["messages"][-1]
+                    answer = final_message.content
+                    
+                    # Display response
+                    message_placeholder.markdown(answer)
+                    
+                    # Add AI response to chat history
+                    st.session_state.chat_messages.append({"role": "assistant", "content": answer})
+                except Exception as e:
+                    logger.error(f"Error getting chat response: {str(e)}")
+                    message_placeholder.markdown("Sorry, I encountered an error while processing your question. Please try again.")
+
+def format_transcript_with_clickable_timestamps(transcript_list, video_id, jump_in_embedded=False):
+    """
+    Format transcript with clickable timestamps that jump to specific points in the video.
+    
+    Args:
+        transcript_list: List of transcript items with start times and text
+        video_id: YouTube video ID
+        jump_in_embedded: Whether to jump to timestamp in embedded video or open in new tab
+        
+    Returns:
+        HTML string with clickable timestamps
+    """
+    html_parts = []
+    html_parts.append('<div class="transcript-container" style="height: 400px; overflow-y: auto; font-family: monospace; white-space: pre-wrap; padding: 10px; background-color: #1A1A1A; border-radius: 8px; border: 1px solid #333;">')
+    
+    for item in transcript_list:
+        # Convert seconds to MM:SS format
+        seconds = int(item['start'])
+        minutes, seconds = divmod(seconds, 60)
+        timestamp = f"{minutes:02d}:{seconds:02d}"
+        
+        # Create clickable timestamp that jumps to that point in the video
+        timestamp_seconds = int(item['start'])
+        html_parts.append(f'<div class="transcript-line" style="margin-bottom: 8px;">')
+        
+        if jump_in_embedded:
+            # Create a link that uses JavaScript to control the embedded player
+            html_parts.append(f'<a href="javascript:void(0)" onclick="document.querySelector(\'iframe\').contentWindow.postMessage(\'{{\"event\":\"command\",\"func\":\"seekTo\",\"args\":[{timestamp_seconds},true]}}\', \'*\')" style="color: #FF0000; text-decoration: none; font-weight: bold;">[{timestamp}]</a> {item["text"]}')
+        else:
+            # Create a link that opens in a new tab
+            html_parts.append(f'<a href="https://www.youtube.com/watch?v={video_id}&t={timestamp_seconds}" target="_blank" style="color: #FF0000; text-decoration: none; font-weight: bold;">[{timestamp}]</a> {item["text"]}')
+        
+        html_parts.append('</div>')
+    
+    html_parts.append('</div>')
+    return ''.join(html_parts)
+
+def get_transcript_with_timestamps(youtube_url: str) -> Tuple[str, List[Dict[str, Any]]]:
+    """
+    Get the transcript of a YouTube video with timestamps.
+    
+    Args:
+        youtube_url: The URL of the YouTube video
+        
+    Returns:
+        A tuple containing:
+        - The formatted transcript as a string with timestamps
+        - The raw transcript list for further processing
+        
+    Raises:
+        ValueError: If the transcript cannot be retrieved
+    """
+    try:
+        # Extract video ID
+        video_id = extract_video_id(youtube_url)
+        
+        # Fetch transcript with timestamps
+        logger.info(f"Fetching transcript with timestamps for video {video_id}")
+        transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+        
+        # Format transcript with timestamps
+        formatted_transcript = []
+        for item in transcript_list:
+            # Convert seconds to MM:SS format
+            seconds = int(item['start'])
+            minutes, seconds = divmod(seconds, 60)
+            timestamp = f"{minutes:02d}:{seconds:02d}"
+            
+            # Add timestamp and text
+            formatted_transcript.append(f"[{timestamp}] {item['text']}")
+        
+        # Join transcript segments with newlines
+        transcript_text = "\n".join(formatted_transcript)
+        
+        return transcript_text, transcript_list
+        
+    except Exception as e:
+        error_msg = f"Error retrieving transcript with timestamps: {str(e)}"
+        logger.error(error_msg)
+        raise ValueError(error_msg)
 
 def run_analysis(youtube_url: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """
@@ -704,6 +827,17 @@ def run_analysis(youtube_url: str) -> Tuple[Optional[Dict[str, Any]], Optional[s
         
         # Get the transcript
         transcript = get_transcript(youtube_url)
+        progress_bar.progress(15)
+        
+        # Get transcript with timestamps
+        try:
+            timestamped_transcript, transcript_list = get_transcript_with_timestamps(youtube_url)
+            st.session_state.timestamped_transcript = timestamped_transcript
+            st.session_state.transcript_list = transcript_list
+        except Exception as e:
+            logger.warning(f"Could not get transcript with timestamps: {str(e)}")
+            st.session_state.timestamped_transcript = None
+        
         progress_bar.progress(20)
         status_placeholder.info("Creating analysis crew...")
         
@@ -799,8 +933,8 @@ def display_analysis_results(results: Dict[str, Any]):
     col1, col2 = st.columns([1, 1])
     
     with col1:
-        # Display embedded YouTube video
-        st.video(results["youtube_url"])
+        # Display embedded YouTube video with enablejsapi=1 to allow JavaScript control
+        st.markdown(f'<iframe width="100%" height="315" src="https://www.youtube.com/embed/{video_id}?enablejsapi=1" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>', unsafe_allow_html=True)
         
         # Display category badge
         category_class = get_category_class(category)
@@ -838,22 +972,81 @@ def display_analysis_results(results: Dict[str, Any]):
         
         with tabs[4]:
             st.markdown("### Video Transcript")
-            st.text_area("Transcript", results["transcript"], height=300, label_visibility="collapsed")
+            
+            # Add toggles for timestamps
+            col_a, col_b, col_c = st.columns([1, 1, 1])
+            with col_a:
+                show_timestamps = st.checkbox("Show timestamps", value=True)
+            with col_b:
+                clickable_timestamps = st.checkbox("Enable clickable timestamps", value=True)
+            with col_c:
+                jump_in_embedded = st.checkbox("Jump in embedded video", value=False, 
+                                              help="When enabled, clicking timestamps will jump to that point in the embedded video instead of opening a new tab")
+            
+            # Add JavaScript to enable communication with the YouTube iframe
+            if jump_in_embedded:
+                st.markdown("""
+                <script>
+                function onYouTubeIframeAPIReady() {
+                    console.log('YouTube iframe API ready');
+                }
+                </script>
+                <script src="https://www.youtube.com/iframe_api"></script>
+                """, unsafe_allow_html=True)
+            
+            if show_timestamps:
+                # Check if we have a timestamped transcript in session state
+                if "timestamped_transcript" in st.session_state and st.session_state.timestamped_transcript:
+                    if clickable_timestamps and "transcript_list" in st.session_state:
+                        # Display transcript with clickable timestamps
+                        html = format_transcript_with_clickable_timestamps(st.session_state.transcript_list, video_id, jump_in_embedded)
+                        st.markdown(html, unsafe_allow_html=True)
+                    else:
+                        # Display plain text transcript with timestamps
+                        st.text_area("Transcript with timestamps", st.session_state.timestamped_transcript, height=400, label_visibility="collapsed")
+                else:
+                    # Try to get transcript with timestamps
+                    try:
+                        timestamped_transcript, transcript_list = get_transcript_with_timestamps(results["youtube_url"])
+                        st.session_state.timestamped_transcript = timestamped_transcript
+                        st.session_state.transcript_list = transcript_list
+                        
+                        if clickable_timestamps:
+                            # Display transcript with clickable timestamps
+                            html = format_transcript_with_clickable_timestamps(transcript_list, video_id, jump_in_embedded)
+                            st.markdown(html, unsafe_allow_html=True)
+                        else:
+                            # Display plain text transcript with timestamps
+                            st.text_area("Transcript with timestamps", timestamped_transcript, height=400, label_visibility="collapsed")
+                    except Exception as e:
+                        st.error(f"Error retrieving transcript with timestamps: {str(e)}")
+                        st.text_area("Transcript", results["transcript"], height=400, label_visibility="collapsed")
+            else:
+                # Show regular transcript
+                st.text_area("Transcript", results["transcript"], height=400, label_visibility="collapsed")
     
     with col2:
         # Display chat interface
         st.markdown("<h3>Chat with this Video</h3>", unsafe_allow_html=True)
         st.markdown("<p>Ask questions about the video content and get detailed answers based on the transcript.</p>", unsafe_allow_html=True)
         
-        if st.session_state.chat_enabled and st.session_state.chat_details:
-            display_chat_interface(st.session_state.chat_details)
-        else:
-            st.warning("Chat functionality could not be enabled for this video. Please try again.")
+        # Create a container with fixed height for the chat interface
+        chat_area = st.container()
+        
+        with chat_area:
+            if st.session_state.chat_enabled and st.session_state.chat_details:
+                display_chat_interface(st.session_state.chat_details)
+            else:
+                st.warning("Chat functionality could not be enabled for this video. Please try again.")
 
 def main():
-    """Main function for the Streamlit app."""
+    """
+    Main function to run the Streamlit app.
+    """
+    # Load custom CSS
+    load_css()
     
-    # Initialize session state variables
+    # Initialize session state variables if they don't exist
     if "chat_enabled" not in st.session_state:
         st.session_state.chat_enabled = False
     
@@ -868,6 +1061,12 @@ def main():
     
     if "analysis_results" not in st.session_state:
         st.session_state.analysis_results = None
+    
+    if "timestamped_transcript" not in st.session_state:
+        st.session_state.timestamped_transcript = None
+    
+    if "transcript_list" not in st.session_state:
+        st.session_state.transcript_list = None
     
     # Sidebar
     with st.sidebar:
@@ -899,7 +1098,16 @@ def main():
         if st.session_state.chat_enabled:
             if st.button("Reset Chat", key="reset_chat"):
                 st.session_state.chat_messages = []
-
+                # Re-initialize welcome message
+                if st.session_state.chat_details and "title" in st.session_state.chat_details:
+                    st.session_state.chat_messages = [
+                        {
+                            "role": "assistant", 
+                            "content": f"Hello! I'm your AI assistant for the video \"{st.session_state.chat_details.get('title', 'this YouTube video')}\". Ask me any questions about the content, and I'll do my best to answer based on the transcript."
+                        }
+                    ]
+                st.rerun()
+        
         # Reset analysis button (if analysis is complete)
         if st.session_state.analysis_complete:
             if st.button("New Analysis", key="new_analysis"):
@@ -909,6 +1117,8 @@ def main():
                 st.session_state.chat_details = None
                 st.session_state.analysis_complete = False
                 st.session_state.analysis_results = None
+                st.session_state.timestamped_transcript = None
+                st.session_state.transcript_list = None
                 st.rerun()
         
         st.markdown("---")
@@ -936,14 +1146,29 @@ def main():
                 st.error("Please enter a valid YouTube URL.")
             else:
                 with st.spinner("Analyzing video..."):
-                    results, error = run_analysis(youtube_url)
-                    
-                    if error:
-                        st.markdown(f"<div class='error-box'>Error: {error}</div>", unsafe_allow_html=True)
-                    elif results:
-                        # Display the analysis results
-                        display_analysis_results(results)
-        
+                    try:
+                        # Get transcript with timestamps
+                        try:
+                            timestamped_transcript, transcript_list = get_transcript_with_timestamps(youtube_url)
+                            st.session_state.timestamped_transcript = timestamped_transcript
+                            st.session_state.transcript_list = transcript_list
+                        except Exception as e:
+                            logger.warning(f"Could not get transcript with timestamps: {str(e)}")
+                            st.session_state.timestamped_transcript = None
+                            st.session_state.transcript_list = None
+                            
+                        # Run the analysis
+                        results, error = run_analysis(youtube_url)
+                        
+                        if error:
+                            st.markdown(f"<div class='error-box'>Error: {error}</div>", unsafe_allow_html=True)
+                        elif results:
+                            # Display the analysis results
+                            display_analysis_results(results)
+                    except Exception as e:
+                        st.error(f"Error analyzing video: {str(e)}")
+                        logger.error(f"Error in analysis: {str(e)}", exc_info=True)
+                
         # Display information about the app when no analysis is running or complete
         else:
             # Display features in cards
