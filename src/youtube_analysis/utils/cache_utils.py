@@ -27,7 +27,7 @@ def get_cache_dir() -> Path:
         home_dir = Path.home()
         cache_dir = home_dir / ".youtube_analysis" / "analysis_cache"
     else:
-        cache_dir = Path(cache_dir)
+        cache_dir = Path(os.path.expanduser(cache_dir))
     
     # Create directory if it doesn't exist
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -42,7 +42,7 @@ def get_cache_key(video_id: str) -> str:
         video_id: The YouTube video ID
         
     Returns:
-        A cache key as an MD5 hash
+        The cache key string
     """
     # Create an MD5 hash of the video ID
     return hashlib.md5(video_id.encode()).hexdigest()
@@ -61,6 +61,10 @@ def get_cached_analysis(video_id: str) -> Optional[Dict[str, Any]]:
         cache_dir = get_cache_dir()
         cache_key = get_cache_key(video_id)
         cache_file = cache_dir / f"{cache_key}_analysis.json"
+        
+        logger.info(f"Looking for cached analysis for video {video_id}")
+        logger.info(f"Cache key: {cache_key}")
+        logger.info(f"Cache file path: {cache_file}")
         
         # Check if cache file exists
         if not cache_file.exists():
@@ -107,7 +111,9 @@ def cache_analysis(video_id: str, analysis_results: Dict[str, Any]) -> None:
         
         # Remove non-serializable objects from the analysis results
         # The agent object from chat_details is not serializable
-        if 'chat_details' in cache_data['analysis_results'] and 'agent' in cache_data['analysis_results']['chat_details']:
+        if ('chat_details' in cache_data['analysis_results'] and 
+            cache_data['analysis_results']['chat_details'] is not None and 
+            'agent' in cache_data['analysis_results']['chat_details']):
             cache_data['analysis_results']['chat_details'].pop('agent', None)
         
         # Write cache file
@@ -146,4 +152,38 @@ def clear_analysis_cache(video_id: str) -> bool:
         
     except Exception as e:
         logger.warning(f"Error clearing analysis cache for video {video_id}: {str(e)}")
-        return False 
+        return False
+
+def create_test_cache_file(video_id: str, analysis_results: Dict[str, Any]) -> None:
+    """
+    Create a test cache file for a specific video ID.
+    This is a helper function for debugging cache issues.
+    
+    Args:
+        video_id: The YouTube video ID
+        analysis_results: The analysis results to cache
+    """
+    try:
+        cache_dir = get_cache_dir()
+        cache_key = get_cache_key(video_id)
+        cache_file = cache_dir / f"{cache_key}_analysis.json"
+        
+        logger.info(f"Creating test cache file for video {video_id}")
+        logger.info(f"Cache key: {cache_key}")
+        logger.info(f"Cache file path: {cache_file}")
+        
+        # Create a copy of the results to modify
+        cache_data = {
+            'video_id': video_id,
+            'analysis_results': analysis_results,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        # Write cache file
+        with open(cache_file, 'w') as f:
+            json.dump(cache_data, f, default=str)  # Use default=str to handle non-serializable objects
+        
+        logger.info(f"Created test cache file for video {video_id}")
+        
+    except Exception as e:
+        logger.warning(f"Error creating test cache file for video {video_id}: {str(e)}", exc_info=True) 

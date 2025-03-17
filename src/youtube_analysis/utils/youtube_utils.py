@@ -1,4 +1,4 @@
-"""Utility functions for YouTube video analysis."""
+"""Utility functions for working with YouTube videos."""
 
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 from urllib.parse import urlparse, parse_qs
@@ -7,11 +7,12 @@ import time
 import os
 import logging
 import hashlib
-from typing import Dict, Optional, Any, List
+from typing import Dict, Optional, Any, List, Tuple
 from datetime import datetime, timedelta
 import json
 from pathlib import Path
 import requests
+from youtube_transcript_api.formatters import TextFormatter
 
 try:
     from pytube import YouTube
@@ -20,316 +21,382 @@ except ImportError:
     PYTUBE_AVAILABLE = False
 
 from .logging import get_logger
+from ..config import YOUTUBE_API_KEY, CACHE_EXPIRY_DAYS, CACHE_DIR
 
 # Configure logging
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
-# Simple cache for transcriptions to avoid redundant API calls
-# Key: video_id, Value: (timestamp, transcript_text)
-TRANSCRIPTION_CACHE: Dict[str, tuple] = {}
-CACHE_EXPIRY = 3600  # Cache expiry in seconds (1 hour)
-
-def extract_video_id(url: str) -> str:
-    """
-    Extract the video ID from a YouTube URL.
-    
-    Args:
-        url: The YouTube URL
-        
-    Returns:
-        The extracted video ID
-        
-    Raises:
-        ValueError: If the URL is not a valid YouTube URL
-    """
-    # Regular expression patterns for different YouTube URL formats
-    patterns = [
-        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})',
-        r'(?:https?:\/\/)?(?:www\.)?youtu\.be\/([a-zA-Z0-9_-]{11})',
-        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([a-zA-Z0-9_-]{11})',
-        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/v\/([a-zA-Z0-9_-]{11})',
-    ]
-    
-    # Try each pattern
-    for pattern in patterns:
-        match = re.match(pattern, url)
-        if match:
-            return match.group(1)
-    
-    # If no pattern matches, raise an error
-    raise ValueError(f"Could not extract video ID from URL: {url}")
-
-def get_transcript(youtube_url: str) -> str:
-    """
-    Get the transcript of a YouTube video.
-    
-    Args:
-        youtube_url: The URL of the YouTube video
-        
-    Returns:
-        The transcript as a string
-        
-    Raises:
-        ValueError: If the transcript cannot be retrieved
-    """
-    try:
-        # Extract video ID
-        video_id = extract_video_id(youtube_url)
-        
-        # Check if transcript is cached
-        cached_transcript = get_cached_transcription(video_id)
-        if cached_transcript:
-            logger.info(f"Using cached transcript for video {video_id}")
-            return cached_transcript
-        
-        # Fetch transcript
-        logger.info(f"Fetching transcript for video {video_id}")
-        transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=["en", "de", "ta"])
-        
-        # Combine transcript segments
-        transcript_text = " ".join([item['text'] for item in transcript_list])
-        
-        # Cache the transcript
-        cache_transcription(video_id, transcript_text)
-        
-        return transcript_text
-        
-    except (TranscriptsDisabled, NoTranscriptFound) as e:
-        error_msg = f"No transcript available for this video: {str(e)}"
-        logger.error(error_msg)
-        raise ValueError(error_msg)
-    except Exception as e:
-        error_msg = f"Error retrieving transcript: {str(e)}"
-        logger.error(error_msg)
-        raise ValueError(error_msg)
+# Get cache settings from config
+cache_dir = Path(CACHE_DIR)
+cache_dir.mkdir(parents=True, exist_ok=True)
 
 def get_cache_dir() -> Path:
-    """
-    Get the cache directory for transcriptions.
-    
-    Returns:
-        Path to the cache directory
-    """
-    # Get cache directory from environment variable or use default
-    cache_dir = os.environ.get("TRANSCRIPT_CACHE_DIR", None)
-    
-    if not cache_dir:
-        # Use default cache directory in user's home directory
-        home_dir = Path.home()
-        cache_dir = home_dir / ".youtube_analysis" / "cache"
-    else:
-        cache_dir = Path(cache_dir)
-    
-    # Create directory if it doesn't exist
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    
+    """Get the cache directory path and ensure it exists."""
     return cache_dir
 
-def get_cache_key(video_id: str) -> str:
+def get_cache_key(video_id: str, prefix: str = "") -> str:
     """
     Generate a cache key for a video ID.
     
     Args:
         video_id: The YouTube video ID
-        
+        prefix: Optional prefix for the cache key
+    
     Returns:
-        A cache key as an MD5 hash
+        The cache key string
     """
-    # Create an MD5 hash of the video ID
-    return hashlib.md5(video_id.encode()).hexdigest()
+    key = f"{prefix}_{video_id}" if prefix else video_id
+    return hashlib.sha256(key.encode()).hexdigest()
+
+def is_cache_valid(cache_file: Path) -> bool:
+    """
+    Check if a cache file is still valid based on its age.
+    
+    Args:
+        cache_file: Path to the cache file
+    
+    Returns:
+        True if the cache is still valid, False otherwise
+    """
+    if not cache_file.exists():
+        return False
+    
+    # Check file age
+    file_age = datetime.now() - datetime.fromtimestamp(cache_file.stat().st_mtime)
+    return file_age.days < CACHE_EXPIRY_DAYS
 
 def get_cached_transcription(video_id: str) -> Optional[str]:
     """
-    Get a cached transcription if available and not expired.
+    Get cached transcription for a video if available.
     
     Args:
         video_id: The YouTube video ID
-        
+    
     Returns:
-        The cached transcription or None if not available
+        The cached transcription or None if not found/expired
     """
     try:
-        cache_dir = get_cache_dir()
-        cache_key = get_cache_key(video_id)
-        cache_file = cache_dir / f"{cache_key}.json"
+        cache_file = get_cache_dir() / f"{get_cache_key(video_id, 'transcript')}.json"
         
-        # Check if cache file exists
-        if not cache_file.exists():
-            return None
+        if is_cache_valid(cache_file):
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return data.get('transcript')
         
-        # Read cache file
-        with open(cache_file, 'r') as f:
-            cache_data = json.load(f)
-        
-        # Check if cache is expired (default: 24 hours)
-        cache_expiration_hours = int(os.environ.get("CACHE_EXPIRATION_HOURS", 24))
-        timestamp = datetime.fromisoformat(cache_data['timestamp'])
-        if datetime.now() - timestamp > timedelta(hours=cache_expiration_hours):
-            logger.info(f"Cache expired for video {video_id}")
-            return None
-        
-        return cache_data['transcript']
-        
+        return None
     except Exception as e:
         logger.warning(f"Error reading cache for video {video_id}: {str(e)}")
         return None
 
-def cache_transcription(video_id: str, transcript: str) -> None:
+def cache_transcription(video_id: str, transcript: str) -> bool:
     """
-    Cache a transcription for future use.
+    Cache a video transcription.
     
     Args:
         video_id: The YouTube video ID
-        transcript: The transcription to cache
+        transcript: The transcription text
+    
+    Returns:
+        True if caching was successful, False otherwise
     """
     try:
-        cache_dir = get_cache_dir()
-        cache_key = get_cache_key(video_id)
-        cache_file = cache_dir / f"{cache_key}.json"
+        cache_file = get_cache_dir() / f"{get_cache_key(video_id, 'transcript')}.json"
         
-        # Create cache data
-        cache_data = {
+        data = {
             'video_id': video_id,
             'transcript': transcript,
             'timestamp': datetime.now().isoformat()
         }
         
-        # Write cache file
-        with open(cache_file, 'w') as f:
-            json.dump(cache_data, f)
+        with open(cache_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
         
-        logger.info(f"Cached transcript for video {video_id}")
-        
+        return True
     except Exception as e:
-        logger.warning(f"Error caching transcript for video {video_id}: {str(e)}")
+        logger.warning(f"Error caching transcription for video {video_id}: {str(e)}")
+        return False
 
-def get_transcript_from_url(youtube_url: str) -> str:
+def extract_video_id(url: str) -> Optional[str]:
     """
-    Fetches the transcription of a YouTube video given its URL.
+    Extract the video ID from a YouTube URL.
     
     Args:
-        youtube_url: The URL of the YouTube video.
-
+        url: YouTube URL or video ID
+    
     Returns:
-        The full transcription text of the video.
+        Video ID or None if invalid URL
     """
-    logger.info(f"Fetching transcription for URL: {youtube_url}")
     try:
-        # Extract video ID from the YouTube URL
-        video_id = extract_video_id(youtube_url)
-        logger.debug(f"Extracted video ID: {video_id}")
+        # Check if the input is already a video ID (11 characters, alphanumeric with _ and -)
+        if re.match(r'^[0-9A-Za-z_-]{11}$', url):
+            logger.info(f"Input appears to be a video ID already: {url}")
+            return url
+            
+        # Handle various YouTube URL formats
+        patterns = [
+            r'(?:v=|\/)([0-9A-Za-z_-]{11}).*',  # Standard and shortened
+            r'(?:embed\/)([0-9A-Za-z_-]{11})',  # Embed URLs
+            r'(?:watch\?v=)([0-9A-Za-z_-]{11})',  # Standard watch URLs
+            r'(?:youtu\.be\/)([0-9A-Za-z_-]{11})'  # youtu.be URLs
+        ]
         
-        # Check if we have a cached transcription
-        current_time = time.time()
-        if video_id in TRANSCRIPTION_CACHE:
-            timestamp, transcript_text = TRANSCRIPTION_CACHE[video_id]
-            if current_time - timestamp < CACHE_EXPIRY:
-                logger.info(f"Using cached transcription for video ID: {video_id}")
-                return transcript_text
+        for pattern in patterns:
+            match = re.search(pattern, url)
+            if match:
+                return match.group(1)
         
-        # Fetch the transcript directly using get_transcript
-        logger.debug(f"Fetching transcript for video ID: {video_id}")
-        transcript_data = YouTubeTranscriptApi.get_transcript(video_id)
-        
-        # Manual extraction and formatting of transcript text
-        transcript_lines = []
-        for item in transcript_data:
-            if 'text' in item:
-                transcript_lines.append(item['text'])
-        
-        # Join all transcript lines with line breaks
-        transcript_text = '\n'.join(transcript_lines)
-        
-        logger.info(f"Successfully fetched transcription with {len(transcript_text)} characters")
-        
-        # Cache the transcription
-        TRANSCRIPTION_CACHE[video_id] = (current_time, transcript_text)
-        
-        return transcript_text
-    
+        # If we get here, no pattern matched
+        logger.warning(f"Could not extract video ID from URL: {url}")
+        return None
     except Exception as e:
-        error_message = f"Error fetching transcription: {str(e)}"
-        logger.error(error_message, exc_info=True)
-        raise ValueError(error_message)
-
-def get_video_info(video_id: str) -> Dict[str, Any]:
-    """
-    Get information about a YouTube video (title, description, etc.).
-    
-    Args:
-        video_id: The YouTube video ID
-        
-    Returns:
-        A dictionary containing video information
-    """
-    video_info = {
-        "title": f"YouTube Video ({video_id})",
-        "description": "No description available"
-    }
-    
-    try:
-        # Try YouTube Data API first if available
-        api_key = os.environ.get("YOUTUBE_API_KEY")
-        if api_key:
-            url = f"https://www.googleapis.com/youtube/v3/videos?id={video_id}&key={api_key}&part=snippet"
-            try:
-                response = requests.get(url, timeout=10)
-                if response.status_code == 200:
-                    data = response.json()
-                    if data.get("items") and len(data["items"]) > 0:
-                        snippet = data["items"][0]["snippet"]
-                        video_info["title"] = snippet.get("title", f"YouTube Video ({video_id})")
-                        video_info["description"] = snippet.get("description", "No description available")
-                        logger.info(f"Retrieved video info for {video_id} using YouTube Data API")
-                        return video_info
-                    else:
-                        logger.warning(f"No video data found for {video_id} using YouTube Data API")
-                else:
-                    logger.warning(f"Failed to retrieve video info from YouTube Data API: {response.status_code}")
-            except Exception as e:
-                logger.warning(f"Error using YouTube Data API: {str(e)}")
-        
-        # Fallback to pytube if API key not available or API request failed
-        if PYTUBE_AVAILABLE:
-            try:
-                # Use pytube to get video info with error handling
-                yt = YouTube(f"https://www.youtube.com/watch?v={video_id}")
-                
-                # Safely get title
-                try:
-                    if hasattr(yt, 'title') and yt.title:
-                        video_info["title"] = yt.title
-                except Exception as e:
-                    logger.warning(f"Error retrieving title with pytube: {str(e)}")
-                
-                # Safely get description
-                try:
-                    if hasattr(yt, 'description') and yt.description:
-                        video_info["description"] = yt.description
-                except Exception as e:
-                    logger.warning(f"Error retrieving description with pytube: {str(e)}")
-                
-                logger.info(f"Retrieved video info for {video_id} using pytube")
-            except Exception as e:
-                logger.warning(f"Error retrieving video info with pytube: {str(e)}")
-                
-    except Exception as e:
-        logger.error(f"Error retrieving video info for {video_id}: {str(e)}", exc_info=True)
-    
-    return video_info
+        logger.error(f"Error extracting video ID: {str(e)}")
+        return None
 
 def validate_youtube_url(url: str) -> bool:
     """
-    Validate if the provided URL is a valid YouTube URL.
+    Validate if a URL is a valid YouTube URL.
     
     Args:
         url: The URL to validate
         
     Returns:
-        True if the URL is valid, False otherwise
+        True if valid, False otherwise
     """
     if not url:
         return False
+        
+    patterns = [
+        r'^https?:\/\/(?:www\.)?youtube\.com\/watch\?v=[0-9A-Za-z_-]{11}.*$',
+        r'^https?:\/\/(?:www\.)?youtu\.be\/[0-9A-Za-z_-]{11}.*$',
+        r'^https?:\/\/(?:www\.)?youtube\.com\/embed\/[0-9A-Za-z_-]{11}.*$'
+    ]
     
-    youtube_pattern = r'(https?://)?(www\.)?(youtube\.com/watch\?v=|youtu\.be/)[a-zA-Z0-9_-]+'
-    return bool(re.match(youtube_pattern, url)) 
+    return any(re.match(pattern, url) for pattern in patterns)
+
+def get_transcript(url: str, use_cache: bool = True) -> str:
+    """
+    Get the transcript of a YouTube video.
+    
+    Args:
+        url: The YouTube URL
+        use_cache: Whether to use cached transcripts
+    
+    Returns:
+        The video transcript
+    
+    Raises:
+        ValueError: If the URL is invalid or transcript cannot be retrieved
+    """
+    try:
+        video_id = extract_video_id(url)
+        
+        # Try to get from cache first
+        if use_cache:
+            cached_transcript = get_cached_transcription(video_id)
+            if cached_transcript:
+                logger.info(f"Using cached transcript for video {video_id}")
+                return cached_transcript
+        
+        # Get transcript from YouTube
+        try:
+            transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+        except Exception as e:
+            raise ValueError(f"Could not get transcript: {str(e)}")
+        
+        # Format transcript
+        formatter = TextFormatter()
+        transcript_text = formatter.format_transcript(transcript_list)
+        
+        # Cache the transcript
+        if use_cache:
+            cache_transcription(video_id, transcript_text)
+        
+        return transcript_text
+    
+    except ValueError as e:
+        raise e
+    except Exception as e:
+        raise ValueError(f"Error getting transcript: {str(e)}")
+
+def get_video_info(url: str) -> Optional[Dict[str, str]]:
+    """
+    Get basic information about a YouTube video.
+    
+    Args:
+        url: YouTube video URL
+    
+    Returns:
+        Dictionary with video information or None if error
+    """
+    try:
+        video_id = extract_video_id(url)
+        if not video_id:
+            logger.error(f"Could not extract video ID from URL: {url}")
+            return None
+        
+        # Try using YouTube Data API if API key is available
+        api_key = YOUTUBE_API_KEY
+        if api_key:
+            try:
+                # Use YouTube Data API v3
+                api_url = f"https://www.googleapis.com/youtube/v3/videos?id={video_id}&key={api_key}&part=snippet"
+                response = requests.get(api_url)
+                data = response.json()
+                
+                if response.status_code == 200 and data.get('items'):
+                    snippet = data['items'][0]['snippet']
+                    return {
+                        'video_id': video_id,
+                        'title': snippet.get('title', f"YouTube Video ({video_id})"),
+                        'description': snippet.get('description', '')[:500] + "..." if len(snippet.get('description', '')) > 500 else snippet.get('description', ''),
+                        'thumbnail_url': snippet.get('thumbnails', {}).get('high', {}).get('url', f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"),
+                        'youtube_url': url
+                    }
+                else:
+                    logger.warning(f"YouTube API returned no items or error: {data.get('error', {}).get('message', 'Unknown error')}")
+            except Exception as e:
+                logger.warning(f"Error using YouTube Data API: {str(e)}")
+        
+        # Try using pytube as fallback
+        if PYTUBE_AVAILABLE:
+            try:
+                from pytube import YouTube
+                yt = YouTube(url)
+                
+                return {
+                    'video_id': video_id,
+                    'title': yt.title,
+                    'description': yt.description[:500] + "..." if len(yt.description) > 500 else yt.description,
+                    'thumbnail_url': f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg",
+                    'youtube_url': url
+                }
+            except Exception as e:
+                logger.warning(f"Error using pytube to get video info: {str(e)}")
+        
+        # Fallback to a simpler approach with just the video ID
+        logger.info(f"Using basic video info for {video_id} as fallback")
+        return {
+            'video_id': video_id,
+            'title': f"YouTube Video ({video_id})",
+            'description': "Video description unavailable.",
+            'thumbnail_url': f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg",
+            'youtube_url': url
+        }
+            
+    except Exception as e:
+        logger.error(f"Error fetching video info: {str(e)}")
+        return None
+
+def process_transcript_async(youtube_url: str) -> Tuple[Optional[str], Optional[List], Optional[str]]:
+    """
+    Process a YouTube video transcript asynchronously.
+    
+    Args:
+        youtube_url: The YouTube URL
+    
+    Returns:
+        Tuple of (timestamped_transcript, transcript_list, error_message)
+    """
+    try:
+        # Validate URL
+        if not validate_youtube_url(youtube_url):
+            return None, None, "Invalid YouTube URL"
+        
+        # Extract video ID
+        video_id = extract_video_id(youtube_url)
+        if not video_id:
+            return None, None, "Could not extract video ID from URL"
+        
+        # Get transcript with timestamps
+        try:
+            timestamped_transcript, transcript_list = get_transcript_with_timestamps(youtube_url)
+            return timestamped_transcript, transcript_list, None
+        except Exception as e:
+            error_msg = f"Error getting transcript with timestamps: {str(e)}"
+            logger.error(error_msg)
+            
+            # Try to get plain transcript as fallback
+            try:
+                plain_transcript = get_transcript(youtube_url)
+                return plain_transcript, None, None
+            except Exception as e2:
+                error_msg = f"Error getting transcript: {str(e2)}"
+                logger.error(error_msg)
+                return None, None, error_msg
+    
+    except Exception as e:
+        error_msg = f"Error processing transcript: {str(e)}"
+        logger.error(error_msg)
+        return None, None, error_msg
+
+def get_transcript_with_timestamps(youtube_url: str) -> Tuple[str, List]:
+    """
+    Get a transcript with timestamps for a YouTube video.
+    
+    Args:
+        youtube_url: The YouTube URL
+    
+    Returns:
+        Tuple of (formatted_transcript_with_timestamps, transcript_list)
+    
+    Raises:
+        ValueError: If the transcript cannot be retrieved
+    """
+    try:
+        video_id = extract_video_id(youtube_url)
+        if not video_id:
+            raise ValueError(f"Could not extract video ID from URL: {youtube_url}")
+        
+        # Get transcript from YouTube
+        try:
+            transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+        except Exception as e:
+            raise ValueError(f"Could not get transcript: {str(e)}")
+        
+        # Format transcript with timestamps
+        formatted_transcript = ""
+        for entry in transcript_list:
+            # Convert seconds to MM:SS format
+            seconds = int(entry['start'])
+            minutes, seconds = divmod(seconds, 60)
+            timestamp = f"{minutes:02d}:{seconds:02d}"
+            
+            # Add timestamp and text
+            formatted_transcript += f"[{timestamp}] {entry['text']}\n"
+        
+        return formatted_transcript, transcript_list
+    
+    except ValueError as e:
+        raise e
+    except Exception as e:
+        raise ValueError(f"Error getting transcript with timestamps: {str(e)}")
+
+def clear_cache(video_id: Optional[str] = None) -> bool:
+    """
+    Clear the transcript cache.
+    
+    Args:
+        video_id: Optional specific video ID to clear, or None for all
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        cache_dir = get_cache_dir()
+        
+        if video_id:
+            # Clear specific video cache
+            cache_file = cache_dir / f"{get_cache_key(video_id, 'transcript')}.json"
+            if cache_file.exists():
+                cache_file.unlink()
+                logger.info(f"Cleared cache for video {video_id}")
+        else:
+            # Clear all cache files
+            for cache_file in cache_dir.glob("*.json"):
+                cache_file.unlink()
+            logger.info("Cleared all transcript cache files")
+        
+        return True
+    except Exception as e:
+        logger.error(f"Error clearing cache: {str(e)}")
+        return False 
