@@ -15,12 +15,21 @@ classify_video:
     - Finance
     - Personal Development
     
+    Additionally, identify the most appropriate context tag for this video:
+    - Tutorial
+    - News
+    - Review
+    - Case Study
+    - Interview
+    - Opinion Piece
+    - How-To Guide
+    
     Provide a brief explanation for your classification choice, highlighting key terms or themes
     from the transcript that support your decision. If the video spans multiple categories,
     choose the most dominant one and mention the secondary categories in your explanation.
 
   expected_output: >
-    A clear classification of the video into one of the specified categories, along with
+    A clear classification of the video into one of the specified categories and context tags, along with
     a brief explanation justifying the classification based on the transcript content.
 
 summarize_content:
@@ -28,13 +37,21 @@ summarize_content:
     Here is the YouTube video transcription:
     {transcript}
 
-    Create a concise executive summary of the YouTube video transcript, including:
+    Create an adaptive, layered summary of the YouTube video transcript, including:
 
-    - TL;DR: Briefly summarize the video's core message in 3-4 clear sentences.
-    - Key Points: Provide a bullet-point list (max 5 points) of the most critical takeaways.
+    1. Basic TL;DR Layer: Briefly summarize the video's core message in 3-4 clear sentences.
+    
+    2. Deep Dive Layer: Provide a more comprehensive summary (8-10 sentences) that includes nuanced 
+       details, context, and secondary points important for deeper understanding.
+    
+    3. Key Points: Provide a bullet-point list (max 5 points) of the most critical takeaways.
+    
+    Adapt your summary style based on the context tag identified in the classification (tutorial, news, 
+    review, etc.) to make the information more relevant to how the content is presented.
 
   expected_output: >
-    Concise, structured executive summary featuring a succinct TL;DR and essential key points.
+    Multi-layered, context-aware summary featuring both a succinct TL;DR, a comprehensive deep dive option,
+    and essential key points, styled appropriately for the video's context tag.
 
 analyze_content:
   description: >
@@ -47,11 +64,17 @@ analyze_content:
     - Intended audience and relevance
     - Unique points or value propositions
     - Significant technical or practical details
+    
+    Additionally, analyze the emotional tone of the content:
+    - Identify whether the speaker's approach is primarily informative, persuasive, or biased
+    - Note any emotional undertones (enthusiasm, urgency, caution, etc.)
+    - Assess the overall presentation style (formal, conversational, technical, etc.)
 
     Include brief, relevant quotes or examples for clarity.
 
   expected_output: >
-    Clear, broadly applicable notes suitable for efficient study and quick comprehension.
+    Clear, broadly applicable notes suitable for efficient study and quick comprehension, 
+    including emotional tone analysis that helps users understand the presenter's approach.
 
 create_action_plan:
   description: >
@@ -66,31 +89,42 @@ create_action_plan:
     - Clearly defined anticipated outcomes
     - Potential challenges accompanied by simple solutions
 
+    Tailor your recommendations based on the emotional tone and context tag identified in previous tasks,
+    ensuring the action plan aligns with how the information was presented (tutorial-style steps for tutorials,
+    analytical responses for news content, etc.).
+
     Each recommendation should be direct, practical, and easy to implement immediately.
 
   expected_output: >
-    Direct, actionable advisor notes clearly outlining recommendations, resources, outcomes, and succinct solutions to potential challenges.
+    Direct, actionable advisor notes clearly outlining recommendations, resources, outcomes, and succinct solutions
+    to potential challenges, contextualized based on the content's tone and format.
 
 write_report:
   description: >
     Here is the YouTube video transcription:
     {transcript}
 
-    Use the classification from the Classify Video task.
-    Use the summary from the Summarize Content task.
-    Use the analysis from the Analyze Content task.
-    Use the action plan from the Create Action Plan task.
+    Use the classification and context tag from the Classify Video task.
+    Use the layered summary from the Summarize Content task.
+    Use the analysis and emotional tone assessment from the Analyze Content task.
+    Use the context-aware action plan from the Create Action Plan task.
     
     Prepare a succinct, high-quality Markdown report (maximum 750 words) clearly summarizing:
 
-    - Classification
-    - Crisp TL;DR
+    - Classification and Context Tag
+    - Basic TL;DR (for quick scanning)
+    - Deep Dive Summary (expandable/collapsible for users who want more detail)
     - Key Points
-    - Concise Analysis Notes
+    - Concise Analysis Notes with Emotional Tone Assessment
     - Direct Advisor Recommendations and Action Plan
     - Potential Challenges and Simple Solutions
 
+    You must provide a suitable title for the report. It must not be like "Markdown Report" or "YouTube Analysis Report".
     Prioritize clarity, readability, and brevity, eliminating redundancy to create superior quality, highly effective notes.
+    
+    Structure the report to allow users to quickly scan the basic information while having the option to expand sections
+    for deeper insights when needed.
 
   expected_output: >
-    A structured Markdown report crafted as concise, top-tier notes optimized for immediate understanding and practical application.
+    A structured, contextually-layered Markdown report crafted with both basic and detailed information layers,
+    optimized for immediate understanding with options for deeper exploration based on user needs.

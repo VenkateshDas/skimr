@@ -47,16 +47,22 @@ def get_cache_key(video_id: str) -> str:
     # Create an MD5 hash of the video ID
     return hashlib.md5(video_id.encode()).hexdigest()
 
-def get_cached_analysis(video_id: str) -> Optional[Dict[str, Any]]:
+def get_cached_analysis(video_id: str, force_bypass: bool = False) -> Optional[Dict[str, Any]]:
     """
     Get cached analysis results if available and not expired.
     
     Args:
         video_id: The YouTube video ID
+        force_bypass: If True, always return None to force a new analysis
         
     Returns:
         The cached analysis results or None if not available
     """
+    # If force_bypass is True, always return None to force a new analysis
+    if force_bypass:
+        logger.info(f"Forced bypass of cache for video {video_id}")
+        return None
+        
     try:
         cache_dir = get_cache_dir()
         cache_key = get_cache_key(video_id)
@@ -68,12 +74,20 @@ def get_cached_analysis(video_id: str) -> Optional[Dict[str, Any]]:
         
         # Check if cache file exists
         if not cache_file.exists():
-            logger.info(f"No cached analysis found for video {video_id}")
+            logger.info(f"No cached analysis found for video {video_id} - cache file does not exist")
             return None
         
         # Read cache file
-        with open(cache_file, 'r') as f:
-            cache_data = json.load(f)
+        try:
+            with open(cache_file, 'r') as f:
+                cache_data = json.load(f)
+            logger.info(f"Successfully loaded cache file for video {video_id}")
+        except json.JSONDecodeError as e:
+            logger.warning(f"Invalid JSON in cache file for video {video_id}: {str(e)}")
+            return None
+        except Exception as e:
+            logger.warning(f"Error reading cache file for video {video_id}: {str(e)}")
+            return None
         
         # Check if cache is expired (default: 168 hours / 7 days)
         cache_expiration_hours = int(os.environ.get("ANALYSIS_CACHE_EXPIRATION_HOURS", 168))
@@ -82,7 +96,12 @@ def get_cached_analysis(video_id: str) -> Optional[Dict[str, Any]]:
             logger.info(f"Analysis cache expired for video {video_id}")
             return None
         
-        logger.info(f"Using cached analysis for video {video_id} from {timestamp}")
+        # Extra validation to make sure we have actual analysis data
+        if 'analysis_results' not in cache_data or not cache_data['analysis_results']:
+            logger.warning(f"Cache file found but contains no analysis results for video {video_id}")
+            return None
+            
+        logger.info(f"Using valid cached analysis for video {video_id} from {timestamp}")
         return cache_data['analysis_results']
         
     except Exception as e:

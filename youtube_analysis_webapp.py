@@ -11,6 +11,8 @@ from datetime import datetime
 import traceback
 import html
 import uuid
+import concurrent.futures
+import threading
 
 # Add the src directory to the path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '.')))
@@ -35,7 +37,9 @@ from src.youtube_analysis.utils.youtube_utils import (
     get_transcript, 
     extract_video_id, 
     get_video_info, 
-    validate_youtube_url
+    validate_youtube_url,
+    get_cached_transcription,
+    cache_transcription
 )
 from src.youtube_analysis.utils.logging import get_logger
 from src.youtube_analysis.auth import init_auth_state, display_auth_ui, get_current_user, logout, require_auth
@@ -124,12 +128,13 @@ class AgentState(TypedDict):
     title: Annotated[str, "The title of the video"]
     description: Annotated[str, "The description of the video"]
 
-def process_transcript_async(url: str) -> Tuple[Optional[str], Optional[List[Dict[str, Any]]], Optional[str]]:
+def process_transcript_async(url: str, use_cache: bool = True) -> Tuple[Optional[str], Optional[List[Dict[str, Any]]], Optional[str]]:
     """
     Process a YouTube video transcript asynchronously.
     
     Args:
         url: The YouTube video URL
+        use_cache: Whether to use cached transcripts (default: True)
         
     Returns:
         A tuple containing:
@@ -138,6 +143,11 @@ def process_transcript_async(url: str) -> Tuple[Optional[str], Optional[List[Dic
         - An error message (or None if successful)
     """
     try:
+        # Validate URL parameter
+        if not url:
+            logger.error("Empty URL provided to process_transcript_async")
+            return None, None, "No URL provided"
+            
         logger.info(f"Fetching transcript for video: {url}")
         video_id = extract_video_id(url)
         
@@ -151,6 +161,33 @@ def process_transcript_async(url: str) -> Tuple[Optional[str], Optional[List[Dic
                 return None, None, "Could not extract video ID from URL"
         
         logger.info(f"Using video ID: {video_id}")
+        
+        # Check cache first if enabled
+        if use_cache:
+            cached_transcript = get_cached_transcription(video_id)
+            if cached_transcript:
+                logger.info(f"Using cached transcript for video ID: {video_id}")
+                
+                # Format the cached transcript with timestamps
+                try:
+                    # Get transcript list to reconstruct the timestamped version
+                    from youtube_transcript_api import YouTubeTranscriptApi
+                    transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+                    
+                    # Format transcript with timestamps
+                    timestamped_transcript = ""
+                    for item in transcript_list:
+                        start = item.get('start', 0)
+                        minutes, seconds = divmod(int(start), 60)
+                        timestamp = f"[{minutes:02d}:{seconds:02d}]"
+                        text = item.get('text', '')
+                        timestamped_transcript += f"{timestamp} {text}\n"
+                    
+                    return timestamped_transcript, transcript_list, None
+                except Exception as e:
+                    # If we can't get the transcript list, just use the cached transcript
+                    logger.warning(f"Could not format cached transcript with timestamps: {str(e)}")
+                    return cached_transcript, None, None
         
         # Try to get transcript with timestamps
         try:
@@ -170,6 +207,10 @@ def process_transcript_async(url: str) -> Tuple[Optional[str], Optional[List[Dic
                 timestamp = f"[{minutes:02d}:{seconds:02d}]"
                 text = item.get('text', '')
                 timestamped_transcript += f"{timestamp} {text}\n"
+            
+            # Cache the transcript if caching is enabled
+            if use_cache:
+                cache_transcription(video_id, timestamped_transcript)
             
             logger.info(f"Successfully retrieved transcript for video ID: {video_id}")
             return timestamped_transcript, transcript_list, None
@@ -197,34 +238,193 @@ def load_css():
     """Load custom CSS for the app."""
     st.markdown("""
     <style>
+        /* Global styling */
+        [data-testid="stAppViewContainer"] {
+            background: #121212;
+            background-attachment: fixed;
+        }
+        
+        /* Main content area */
+        [data-testid="stVerticalBlock"] {
+            padding: 0 1rem;
+        }
+        
+        /* Headers */
+        h1, h2, h3, h4, h5 {
+            color: #e0e0e0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-weight: 600;
+        }
+        
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 1.5rem;
+            color: #4dabf7;
+            display: inline-block;
+        }
+        
+        /* Subheaders */
         .sub-header {
-            font-size: 1.5rem;
-            margin-top: 1rem;
-            margin-bottom: 1rem;
+            font-size: 1.8rem;
+            margin-top: 1.5rem;
+            margin-bottom: 1.2rem;
+            color: #e0e0e0;
+            font-weight: 600;
+            border-bottom: none;
+            padding-bottom: 0.5rem;
         }
+        
+        /* Cards */
         .card {
-            padding: 1.5rem;
-            border-radius: 10px;
-            background-color: #1E1E1E;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            margin-bottom: 1rem;
+            padding: 1.8rem;
+            border-radius: 12px;
+            background: #232323;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            margin-bottom: 1.5rem;
+            border: 1px solid #333333;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
         }
+        
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25);
+        }
+        
+        /* Markdown formatting for analysis content */
+        .card h1, .card h2, .card h3, .card h4, .card h5, .card h6 {
+            color: #4dabf7;
+            margin-top: 1.5rem;
+            margin-bottom: 1rem;
+            font-weight: 600;
+        }
+        
+        .card h1 {
+            font-size: 1.8rem;
+            border-bottom: 1px solid #333;
+            padding-bottom: 0.5rem;
+        }
+        
+        .card h2 {
+            font-size: 1.6rem;
+        }
+        
+        .card h3 {
+            font-size: 1.4rem;
+        }
+        
+        .card h4 {
+            font-size: 1.2rem;
+        }
+        
+        .card p {
+            margin-bottom: 1rem;
+            line-height: 1.6;
+        }
+        
+        .card ul, .card ol {
+            margin-left: 1.5rem;
+            margin-bottom: 1.5rem;
+            line-height: 1.6;
+        }
+        
+        .card li {
+            margin-bottom: 0.5rem;
+        }
+        
+        .card li::marker {
+            color: #4dabf7;
+        }
+        
+        .card code {
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            background-color: #2a2a2a;
+            color: #4dabf7;
+            padding: 0.2rem 0.4rem;
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }
+        
+        .card pre {
+            background-color: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 6px;
+            padding: 1rem;
+            overflow-x: auto;
+            margin-bottom: 1.5rem;
+        }
+        
+        .card pre code {
+            background-color: transparent;
+            padding: 0;
+            color: #e0e0e0;
+            font-size: 0.9rem;
+            line-height: 1.5;
+        }
+        
+        .card blockquote {
+            border-left: 3px solid #4dabf7;
+            padding-left: 1rem;
+            margin-left: 0;
+            margin-bottom: 1.5rem;
+            color: #aaaaaa;
+            font-style: italic;
+        }
+        
+        .card table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 1.5rem;
+        }
+        
+        .card th, .card td {
+            padding: 0.75rem;
+            border: 1px solid #333;
+            text-align: left;
+        }
+        
+        .card th {
+            background-color: #2a2a2a;
+            color: #4dabf7;
+            font-weight: 600;
+        }
+        
+        .card tr:nth-child(even) {
+            background-color: #1e1e1e;
+        }
+        
+        .card tr:hover {
+            background-color: #2c2c2c;
+        }
+        
+        /* Key points styling */
+        .card strong {
+            color: #4dabf7;
+            font-weight: 600;
+        }
+        
+        /* Metadata */
         .metadata {
             text-align: center;
-            margin-top: 10px;
+            margin-top: 15px;
             font-style: italic;
-            color: #888;
+            color: #a0a0a0;
         }
+        
+        /* Transcript container */
         .transcript-container {
             max-height: 400px;
             overflow-y: auto;
-            padding: 10px;
-            background-color: #1E1E1E;
-            border-radius: 5px;
+            padding: 15px;
+            background: #232323;
+            border-radius: 10px;
+            border: 1px solid #333333;
         }
+        
         /* Make video larger */
         iframe#youtube-player {
             height: 450px !important;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.20);
         }
         
         /* Fix chat container scrolling */
@@ -238,9 +438,11 @@ def load_css():
         [data-testid="stChatInput"] {
             position: sticky;
             bottom: 0;
-            background-color: #0E1117;
-            padding: 10px 0;
+            background: rgba(18, 18, 18, 0.9);
+            backdrop-filter: blur(10px);
+            padding: 15px 0;
             z-index: 100;
+            border-top: 1px solid #333333;
         }
         
         /* Custom chat container */
@@ -248,19 +450,20 @@ def load_css():
             display: flex;
             flex-direction: column;
             height: 450px;
-            border: 1px solid #333;
-            border-radius: 4px;
-            background-color: #1E1E1E;
+            border: 1px solid #333333;
+            border-radius: 12px;
+            background: #232323;
             overflow: hidden;
             margin-top: 0;
             position: relative;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.20);
         }
         
         /* Chat message area */
         .chat-messages-area {
             flex: 1;
             overflow-y: auto;
-            padding: 0px 10px;
+            padding: 15px;
             margin-bottom: 60px; /* Space for input */
         }
         
@@ -270,17 +473,18 @@ def load_css():
             bottom: 0;
             left: 0;
             right: 0;
-            background-color: #0E1117;
-            border-top: 1px solid #333;
-            padding: 10px;
+            background: rgba(18, 18, 18, 0.9);
+            backdrop-filter: blur(10px);
+            border-top: 1px solid #333333;
+            padding: 15px;
             z-index: 10;
         }
         
         /* Message styling */
         .chat-message {
-            margin-bottom: 10px;
-            padding: 8px 12px;
-            border-radius: 4px;
+            margin-bottom: 15px;
+            padding: 12px 16px;
+            border-radius: 12px;
             max-width: 85%;
             word-wrap: break-word;
             display: flex;
@@ -288,9 +492,9 @@ def load_css():
         }
         
         .message-avatar {
-            margin-right: 8px;
-            font-size: 20px;
-            min-width: 24px;
+            margin-right: 12px;
+            font-size: 24px;
+            min-width: 30px;
         }
         
         .message-content {
@@ -298,36 +502,49 @@ def load_css():
         }
         
         .user-message {
-            background-color: #2C7BF2;
+            background: #4dabf7;
             color: white;
             margin-left: auto;
+            box-shadow: 0 2px 8px rgba(77, 171, 247, 0.15);
         }
         
         .assistant-message {
-            background-color: #383838;
-            color: white;
+            background: #2d2d2d;
+            color: #e0e0e0;
             margin-right: auto;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+            border: 1px solid #333333;
         }
         
         .thinking {
-            background-color: #383838;
-            color: white;
+            background: rgba(45, 45, 45, 0.7);
+            color: #e0e0e0;
             margin-right: auto;
             opacity: 0.7;
         }
         
         /* Style Streamlit form components in the chat */
         .chat-input-container .stTextInput input {
-            background-color: #262730;
-            border: 1px solid #555;
-            color: white;
-            border-radius: 4px;
-            padding: 8px 12px;
+            background: #2d2d2d;
+            border: 1px solid #333333;
+            color: #e0e0e0;
+            border-radius: 8px;
+            padding: 12px 16px;
         }
         
         .chat-input-container .stButton > button {
-            background-color: #FF4B4B;
+            background: #4dabf7;
             color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 0.5rem 1rem;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+        
+        .chat-input-container .stButton > button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(77, 171, 247, 0.3);
         }
         
         /* Fix Streamlit form styling */
@@ -345,27 +562,221 @@ def load_css():
         
         /* Transcript styling */
         .transcript-line {
-            margin-bottom: 8px;
-            line-height: 1.5;
+            margin-bottom: 10px;
+            line-height: 1.6;
             word-wrap: break-word;
             overflow-wrap: break-word;
             white-space: pre-wrap;
         }
         
         .transcript-container a {
-            color: #FF0000 !important;
+            color: #4dabf7 !important;
             text-decoration: none;
             font-weight: bold;
             display: inline-block;
-            margin-right: 5px;
+            margin-right: 8px;
         }
         
         .transcript-container p {
-            margin-bottom: 8px;
-            line-height: 1.5;
+            margin-bottom: 10px;
+            line-height: 1.6;
             word-wrap: break-word;
             overflow-wrap: break-word;
             white-space: pre-wrap;
+            color: #e0e0e0;
+        }
+        
+        /* Sidebar styling */
+        [data-testid="stSidebar"] {
+            background: #1a1a1a;
+            border-right: 1px solid #333333;
+        }
+        
+        [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
+            padding: 2rem 1rem;
+        }
+        
+        /* Button styling */
+        .stButton > button {
+            background: #4dabf7;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 0.5rem 1rem;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+        
+        .stButton > button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(77, 171, 247, 0.3);
+        }
+        
+        /* Input field styling */
+        [data-testid="stTextInput"] input {
+            background: #2d2d2d;
+            border: 1px solid #333333;
+            color: #e0e0e0;
+            border-radius: 8px;
+            padding: 12px 16px;
+        }
+        
+        /* Feature cards */
+        .feature-card {
+            background: #232323;
+            border-radius: 12px;
+            padding: 1.5rem;
+            height: 100%;
+            border: 1px solid #333333;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        }
+        
+        .feature-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25);
+        }
+        
+        .feature-card h3 {
+            margin-top: 0;
+            margin-bottom: 1rem;
+            color: #4dabf7;
+        }
+        
+        /* Step cards */
+        .step-card {
+            background: #232323;
+            border-radius: 12px;
+            padding: 1.5rem;
+            height: 100%;
+            border: 1px solid #333333;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        }
+        
+        .step-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25);
+        }
+        
+        .step-card h3 {
+            margin-top: 0;
+            margin-bottom: 1rem;
+            color: #4dabf7;
+        }
+        
+        /* Tab styling */
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 8px;
+        }
+        
+        .stTabs [data-baseweb="tab"] {
+            background-color: #2d2d2d;
+            border-radius: 8px 8px 0 0;
+            padding: 10px 20px;
+            border: 1px solid #333333;
+            border-bottom: none;
+            color: #e0e0e0;
+        }
+        
+        .stTabs [data-baseweb="tab-panel"] {
+            background-color: #232323;
+            border-radius: 0 0 8px 8px;
+            padding: 20px;
+            border: 1px solid #333333;
+            border-top: none;
+            color: #e0e0e0;
+        }
+        
+        /* Progress bar */
+        [data-testid="stProgressBar"] {
+            background-color: rgba(255, 255, 255, 0.1);
+            height: 10px;
+            border-radius: 10px;
+        }
+        
+        [data-testid="stProgressBar"] > div {
+            background: #4dabf7;
+            border-radius: 10px;
+        }
+        
+        /* Additional dark mode elements */
+        div.stMarkdown p {
+            color: #e0e0e0;
+        }
+        
+        .stTextInput > div > div > input {
+            color: #e0e0e0;
+        }
+        
+        .stSelectbox > div > div > div {
+            background-color: #2d2d2d;
+            color: #e0e0e0;
+        }
+        
+        .stSelectbox > div > div > div:hover {
+            background-color: #333333;
+        }
+        
+        /* Slider styling */
+        .stSlider > div > div > div > div {
+            background-color: #4dabf7;
+        }
+        
+        /* Checkbox styling */
+        .stCheckbox > div > div > label {
+            color: #e0e0e0;
+        }
+        
+        /* Warning/error message styling */
+        div[data-baseweb="notification"] {
+            background-color: #2d2d2d;
+            border-color: #4dabf7;
+        }
+        
+        /* Info box styling */
+        div[data-testid="stInfo"] {
+            background-color: #2d2d2d;
+            color: #e0e0e0;
+        }
+        
+        /* Card strong element styling */
+        .card strong {
+            color: #4dabf7;
+            font-weight: 600;
+        }
+        
+        /* Tab styling - improve appearance of tabs */
+        button[data-baseweb="tab"] {
+            background-color: #1a1a1a;
+            border: 1px solid #333;
+            border-bottom: none;
+            border-radius: 8px 8px 0 0;
+            color: #e0e0e0;
+            padding: 0.75rem 1.25rem;
+            font-weight: 500;
+            transition: background-color 0.2s, color 0.2s;
+        }
+
+        button[data-baseweb="tab"]:hover {
+            background-color: #2a2a2a;
+            color: #4dabf7;
+        }
+
+        button[data-baseweb="tab"][aria-selected="true"] {
+            background-color: #2a2a2a;
+            border-bottom: 2px solid #4dabf7;
+            color: #4dabf7;
+            font-weight: 600;
+        }
+
+        /* Tab content container styling */
+        [data-testid="stTabContent"] {
+            background-color: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 0 8px 8px 8px;
+            padding: 1.5rem;
+            margin-top: -1px;
         }
     </style>
     """, unsafe_allow_html=True)
@@ -374,7 +785,12 @@ def display_chat_interface():
     """Display the chat interface for interacting with the video analysis agent."""
     # Check if chat is enabled
     if not st.session_state.get("chat_enabled", False):
-        st.warning("Chat is not available. Please analyze a video first.")
+        st.markdown("""
+        <div style="background: rgba(255, 177, 66, 0.2); border-left: 4px solid #ffb142; padding: 1.5rem; border-radius: 4px; margin-bottom: 1rem; height: 380px; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center;">
+            <h3 style="margin-top: 0; color: #ffb142;">Chat Not Available</h3>
+            <p style="color: #e0e0e0;">Please analyze a video first to enable the chat functionality.</p>
+        </div>
+        """, unsafe_allow_html=True)
         return
     
     # Get chat details from session state
@@ -382,7 +798,12 @@ def display_chat_interface():
     
     # Handle errors in chat details
     if not chat_details:
-        st.error("Chat details not found. Please analyze a video first.")
+        st.markdown("""
+        <div style="background: rgba(255, 177, 66, 0.2); border-left: 4px solid #ffb142; padding: 1.5rem; border-radius: 4px; margin-bottom: 1rem; height: 380px; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center;">
+            <h3 style="margin-top: 0; color: #ffb142;">Chat Details Not Found</h3>
+            <p style="color: #e0e0e0;">Please analyze a video first to enable the chat functionality.</p>
+        </div>
+        """, unsafe_allow_html=True)
         return
     
     # Create a container for the chat messages with a fixed height
@@ -394,7 +815,7 @@ def display_chat_interface():
         
         # Add a welcome message
         video_title = chat_details.get("title", "this video")
-        welcome_message = f"I'm your YouTube video assistant for \"{video_title}\". Ask me questions about the content, and I'll provide insights based on the transcript and analysis."
+        welcome_message = f"Hello! I'm your AI assistant for the video \"{video_title}\". Ask me any questions about the content, and I'll do my best to answer based on the transcript. I'll include timestamps [MM:SS] in my answers to help you locate information in the video."
         st.session_state.chat_messages.append({"role": "assistant", "content": welcome_message})
     
     # Display all messages in the chat container
@@ -471,68 +892,31 @@ def display_chat_interface():
                                 response = self_clean_response(response)
                             
                             # Add to chat history
-                            st.session_state.chat_messages.append({"role": "assistant", "content": response})
-                        elif supports_streaming:
-                            logger.info("Using native streaming support")
-                            response = st.write_stream(streaming_generator(agent, messages, thread_id))
-                            logger.info(f"Streaming completed, final response length: {len(response) if response else 0}")
-                            
-                            # Add to chat history
-                            st.session_state.chat_messages.append({"role": "assistant", "content": response})
+                            st.session_state.chat_messages.append({
+                                "role": "assistant",
+                                "content": response
+                            })
+                        # For other agent types, use simulated streaming
                         else:
-                            logger.info("Using simulated streaming")
-                            # For simulated streaming, we'll use a placeholder and update it
+                            logger.info(f"Using simulated streaming for {agent_type} agent")
                             placeholder = st.empty()
-                            placeholder.markdown("Thinking...")
                             
-                            # Invoke the agent with the thread ID for memory persistence
                             try:
-                                logger.info("Invoking agent for simulated streaming")
-                                # Get response from agent
-                                agent_response = agent.invoke(
-                                    {"messages": messages},
-                                    config={"configurable": {"thread_id": thread_id}},
-                                )
-                                
-                                logger.info(f"Agent response type: {type(agent_response)}")
-                                logger.info(f"Agent response keys: {agent_response.keys() if isinstance(agent_response, dict) else 'Not a dict'}")
-                                
-                                # Extract the final answer based on response structure
-                                answer = ""
-                                if isinstance(agent_response, dict) and "messages" in agent_response and agent_response["messages"]:
-                                    final_message = agent_response["messages"][-1]
-                                    if hasattr(final_message, "content"):
-                                        answer = final_message.content
-                                        logger.info(f"Extracted answer from messages[-1].content")
-                                    else:
-                                        logger.warning(f"Final message has no content attribute: {final_message}")
-                                        answer = str(final_message)
-                                elif isinstance(agent_response, str):
-                                    answer = agent_response
-                                    logger.info("Agent response is a string")
-                                else:
-                                    logger.warning(f"Unexpected agent response format: {type(agent_response)}")
-                                
-                                logger.info(f"Received response from agent, length: {len(answer)}")
-                                
-                                # Clean up the response to remove repetitive patterns
-                                answer = self_clean_response(answer)
-                                
-                                # Simulate streaming by updating the placeholder with sentences
-                                sentences = split_into_sentences(answer)
+                                # Use a placeholder for streaming simulation
                                 current_response = ""
-                                
-                                for i, sentence in enumerate(sentences):
-                                    current_response += sentence + " "
-                                    placeholder.markdown(current_response.strip())
-                                    time.sleep(0.1)  # Small delay between sentences
+                                for chunk in streaming_generator(agent, messages, thread_id):
+                                    current_response += chunk
+                                    placeholder.markdown(current_response + "▌")
                                 
                                 # Set the final response
                                 response = current_response.strip()
                                 logger.info("Simulated streaming completed")
                                 
                                 # Add to chat history
-                                st.session_state.chat_messages.append({"role": "assistant", "content": response})
+                                st.session_state.chat_messages.append({
+                                    "role": "assistant",
+                                    "content": response
+                                })
                             except Exception as e:
                                 logger.error(f"Error in simulated streaming: {str(e)}")
                                 logger.error(f"Traceback: {traceback.format_exc()}")
@@ -540,7 +924,10 @@ def display_chat_interface():
                                 placeholder.markdown(response)
                                 
                                 # Add to chat history
-                                st.session_state.chat_messages.append({"role": "assistant", "content": response})
+                                st.session_state.chat_messages.append({
+                                    "role": "assistant",
+                                    "content": response
+                                })
                     except Exception as stream_error:
                         logger.error(f"Error during streaming display: {str(stream_error)}")
                         logger.error(f"Traceback: {traceback.format_exc()}")
@@ -548,7 +935,10 @@ def display_chat_interface():
                         st.markdown(error_msg)
                         
                         # Add to chat history
-                        st.session_state.chat_messages.append({"role": "assistant", "content": error_msg})
+                        st.session_state.chat_messages.append({
+                            "role": "assistant",
+                            "content": error_msg
+                        })
                 
                 # Reset streaming state
                 st.session_state.streaming = False
@@ -816,7 +1206,10 @@ def handle_chat_input():
             if agent is None:
                 logger.error("Chat agent is not available for streaming")
                 # Add error message to chat history
-                st.session_state.chat_messages.append({"role": "assistant", "content": "Sorry, the chat agent is not available. Please try analyzing the video again."})
+                st.session_state.chat_messages.append({
+                    "role": "assistant",
+                    "content": "Sorry, the chat agent is not available. Please try analyzing the video again."
+                })
                 st.session_state.streaming = False
                 return
             
@@ -854,76 +1247,52 @@ def handle_chat_input():
                 try:
                     # For CompiledStateGraph agents, use direct streaming
                     if agent_type == "CompiledStateGraph":
-                        logger.info("Using direct streaming for CompiledStateGraph agent")
-                        response = st.write_stream(streaming_generator(agent, messages, thread_id))
-                        logger.info(f"Streaming completed, final response length: {len(response) if response else 0}")
-                        
-                        # Clean the response before storing
-                        if response:
-                            response = self_clean_response(response)
-                        
-                        # Add to chat history
-                        st.session_state.chat_messages.append({"role": "assistant", "content": response})
-                    elif supports_streaming:
-                        logger.info("Using native streaming support")
-                        response = st.write_stream(streaming_generator(agent, messages, thread_id))
-                        logger.info(f"Streaming completed, final response length: {len(response) if response else 0}")
-                        
-                        # Add to chat history
-                        st.session_state.chat_messages.append({"role": "assistant", "content": response})
-                    else:
-                        logger.info("Using simulated streaming")
-                        # For simulated streaming, we'll use a placeholder and update it
-                        placeholder = st.empty()
-                        placeholder.markdown("Thinking...")
-                        
-                        # Invoke the agent with the thread ID for memory persistence
                         try:
-                            logger.info("Invoking agent for simulated streaming")
-                            # Get response from agent
-                            agent_response = agent.invoke(
-                                {"messages": messages},
-                                config={"configurable": {"thread_id": thread_id}},
-                            )
+                            logger.info("Using direct streaming for CompiledStateGraph agent")
+                            response = st.write_stream(streaming_generator(agent, messages, thread_id))
+                            logger.info(f"Streaming completed, final response length: {len(response) if response else 0}")
                             
-                            logger.info(f"Agent response type: {type(agent_response)}")
-                            logger.info(f"Agent response keys: {agent_response.keys() if isinstance(agent_response, dict) else 'Not a dict'}")
+                            # Clean the response before storing
+                            if response:
+                                response = self_clean_response(response)
                             
-                            # Extract the final answer based on response structure
-                            answer = ""
-                            if isinstance(agent_response, dict) and "messages" in agent_response and agent_response["messages"]:
-                                final_message = agent_response["messages"][-1]
-                                if hasattr(final_message, "content"):
-                                    answer = final_message.content
-                                    logger.info(f"Extracted answer from messages[-1].content")
-                                else:
-                                    logger.warning(f"Final message has no content attribute: {final_message}")
-                            elif isinstance(agent_response, str):
-                                answer = agent_response
-                                logger.info("Agent response is a string")
-                            else:
-                                logger.warning(f"Unexpected agent response format: {type(agent_response)}")
+                            # Add to chat history
+                            st.session_state.chat_messages.append({
+                                "role": "assistant",
+                                "content": response
+                            })
+                        except Exception as direct_error:
+                            logger.error(f"Error in direct streaming: {str(direct_error)}")
+                            logger.error(f"Traceback: {traceback.format_exc()}")
+                            error_msg = f"Sorry, I encountered an error while processing your question. Error: {str(direct_error)}"
+                            st.markdown(error_msg)
                             
-                            logger.info(f"Received response from agent, length: {len(answer)}")
-                            
-                            # Clean up the response to remove repetitive patterns
-                            answer = self_clean_response(answer)
-                            
-                            # Simulate streaming by updating the placeholder with sentences
-                            sentences = split_into_sentences(answer)
+                            # Add to chat history
+                            st.session_state.chat_messages.append({
+                                "role": "assistant",
+                                "content": error_msg
+                            })
+                    # For other agent types, use simulated streaming
+                    else:
+                        logger.info(f"Using simulated streaming for {agent_type} agent")
+                        placeholder = st.empty()
+                        
+                        try:
+                            # Use a placeholder for streaming simulation
                             current_response = ""
-                            
-                            for i, sentence in enumerate(sentences):
-                                current_response += sentence + " "
-                                placeholder.markdown(current_response.strip())
-                                time.sleep(0.1)  # Small delay between sentences
+                            for chunk in streaming_generator(agent, messages, thread_id):
+                                current_response += chunk
+                                placeholder.markdown(current_response + "▌")
                             
                             # Set the final response
                             response = current_response.strip()
                             logger.info("Simulated streaming completed")
                             
                             # Add to chat history
-                            st.session_state.chat_messages.append({"role": "assistant", "content": response})
+                            st.session_state.chat_messages.append({
+                                "role": "assistant",
+                                "content": response
+                            })
                         except Exception as e:
                             logger.error(f"Error in simulated streaming: {str(e)}")
                             logger.error(f"Traceback: {traceback.format_exc()}")
@@ -931,7 +1300,10 @@ def handle_chat_input():
                             placeholder.markdown(response)
                             
                             # Add to chat history
-                            st.session_state.chat_messages.append({"role": "assistant", "content": response})
+                            st.session_state.chat_messages.append({
+                                "role": "assistant",
+                                "content": response
+                            })
                 except Exception as stream_error:
                     logger.error(f"Error during streaming display: {str(stream_error)}")
                     logger.error(f"Traceback: {traceback.format_exc()}")
@@ -939,14 +1311,17 @@ def handle_chat_input():
                     st.markdown(error_msg)
                     
                     # Add to chat history
-                    st.session_state.chat_messages.append({"role": "assistant", "content": error_msg})
-            
-            # Reset streaming state
-            st.session_state.streaming = False
-            st.session_state.current_question = None
-            st.session_state.supports_streaming = False
-            logger.info("Streaming state reset")
-            
+                    st.session_state.chat_messages.append({
+                        "role": "assistant",
+                        "content": error_msg
+                    })
+                
+                # Reset streaming state
+                st.session_state.streaming = False
+                st.session_state.current_question = None
+                st.session_state.supports_streaming = False
+                logger.info("Streaming state reset")
+        
         except Exception as e:
             logger.error(f"Error in streaming chat: {str(e)}")
             logger.error(f"Traceback: {traceback.format_exc()}")
@@ -954,7 +1329,10 @@ def handle_chat_input():
             error_msg = f"Sorry, I encountered an error while processing your question. Please try again. Error: {str(e)}"
             
             # Add error message to chat history
-            st.session_state.chat_messages.append({"role": "assistant", "content": error_msg})
+            st.session_state.chat_messages.append({
+                "role": "assistant",
+                "content": error_msg
+            })
             
             # Reset streaming state
             st.session_state.streaming = False
@@ -963,7 +1341,7 @@ def handle_chat_input():
         
         # Force a rerun to update the UI with the new message
         st.rerun()
-        
+    
     # Original non-streaming handling for fallback
     # Check if there's a thinking message that needs to be processed
     if not st.session_state.chat_messages or st.session_state.chat_messages[-1]["role"] != "thinking":
@@ -1029,7 +1407,10 @@ def handle_chat_input():
             st.session_state.chat_messages.pop()
             
             # Add fallback response to chat history
-            st.session_state.chat_messages.append({"role": "assistant", "content": fallback_response})
+            st.session_state.chat_messages.append({
+                "role": "assistant",
+                "content": fallback_response
+            })
             return
         
         thread_id = chat_details.get("thread_id", f"thread_{st.session_state.video_id}_{int(time.time())}")
@@ -1047,7 +1428,10 @@ def handle_chat_input():
             # Remove the thinking message
             st.session_state.chat_messages.pop()
             # Add error message
-            st.session_state.chat_messages.append({"role": "assistant", "content": "Sorry, I couldn't process your question. Please try again."})
+            st.session_state.chat_messages.append({
+                "role": "assistant",
+                "content": "Sorry, I couldn't process your question. Please try again."
+            })
             return
         
         logger.info(f"Processing non-streaming response for question: {user_input}")
@@ -1083,7 +1467,10 @@ def handle_chat_input():
             st.session_state.chat_messages.pop()
             
             # Add AI response to chat history
-            st.session_state.chat_messages.append({"role": "assistant", "content": answer})
+            st.session_state.chat_messages.append({
+                "role": "assistant",
+                "content": answer
+            })
         except Exception as e:
             logger.error(f"Error invoking chat agent: {str(e)}")
             logger.error(f"Traceback: {traceback.format_exc()}")
@@ -1093,7 +1480,10 @@ def handle_chat_input():
             
             # Add error message to chat history
             error_message = f"Sorry, I encountered an error while processing your question. Please try again. Error: {str(e)}"
-            st.session_state.chat_messages.append({"role": "assistant", "content": error_message})
+            st.session_state.chat_messages.append({
+                "role": "assistant",
+                "content": error_message
+            })
     except Exception as e:
         logger.error(f"Error getting chat response: {str(e)}")
         logger.error(f"Traceback: {traceback.format_exc()}")
@@ -1104,7 +1494,10 @@ def handle_chat_input():
         
         # Add error message to chat history
         error_message = "Sorry, I encountered an error while processing your question. Please try again."
-        st.session_state.chat_messages.append({"role": "assistant", "content": error_message})
+        st.session_state.chat_messages.append({
+            "role": "assistant",
+            "content": error_message
+        })
     
     # Force a rerun to update the UI with the new message
     st.rerun()
@@ -1116,12 +1509,96 @@ def display_analysis_results(results: Dict[str, Any]):
     Args:
         results: The analysis results dictionary
     """
-    video_id = results["video_id"]
+    # Import modules needed in this function
+    import re
+    import html
+    
+    # Helper function to sanitize HTML content
+    def sanitize_html_content(content):
+        """Clean up and sanitize HTML content for proper rendering."""
+        if not content:
+            return ""
+        
+        # Fix common HTML issues
+        # First decode any HTML entities
+        content = html.unescape(content)
+        
+        # Fix broken or incomplete HTML tags
+        # Replace malformed header tags that start with <h## with proper <h3 tags
+        content = re.sub(r'<h##([^>]*)>', r'<h3\1>', content)
+        content = re.sub(r'</h##>', r'</h3>', content)
+        
+        # Replace any instances of <h with invalid numbers with <h3
+        content = re.sub(r'<h(\d{2,})([^>]*)>', r'<h3\2>', content)
+        content = re.sub(r'</h\d{2,}>', r'</h3>', content)
+        
+        # Fix specific malformed pattern from the user's example
+        # <h## style="color: #4dabf7; margin-top: 1.5rem; margin-bottom: 1rem;">Classification</h##>
+        content = re.sub(
+            r'<h##\s+style="([^"]*)">([^<]+)</h##>',
+            r'<h3 style="\1">\2</h3>',
+            content
+        )
+        
+        # Fix any other HTML header tags that might have incorrectly nested attributes
+        content = re.sub(
+            r'<(h\d)([^>]*?)style="([^"]*)"([^>]*?)>',
+            r'<\1 style="\3"\2\4>',
+            content
+        )
+        
+        # Improve nested list handling
+        # First replace any double indented items (e.g., "  - Item") with proper nesting
+        content = re.sub(
+            r'(?m)^(\s{2,})- (.+)$',
+            r'<li class="nested-item" style="margin-left: 1.5rem; margin-bottom: 0.5rem;">\2</li>',
+            content
+        )
+        
+        # Fix common unclosed or improperly closed tags
+        for tag in ['p', 'div', 'span', 'strong', 'em', 'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+            # Count opening and closing tags
+            open_count = len(re.findall(f'<{tag}[^>]*>', content))
+            close_count = len(re.findall(f'</{tag}>', content))
+            
+            # Add missing closing tags
+            if open_count > close_count:
+                diff = open_count - close_count
+                content += f'\n{"</" + tag + ">" * diff}'
+        
+        # Fix any unclosed or improperly nested HTML lists
+        if '<li' in content and '</li>' not in content:
+            content = re.sub(r'<li([^>]*)>([^<]+)', r'<li\1>\2</li>', content)
+        
+        # Ensure all <ul> tags have matching closing tags
+        if '<ul' in content and '</ul>' not in content:
+            content += '\n</ul>'
+        
+        # Fix improper class attributes
+        content = re.sub(r'class=([^\s>]+)', r'class="\1"', content)
+        
+        # Fix unclosed style attributes
+        content = re.sub(r'style="([^"]*?)(?=[^"]*>)', r'style="\1"', content)
+        
+        return content
+    
+    # Log what we're displaying
+    logger.info(f"Displaying analysis results with keys: {list(results.keys())}")
+    if "task_outputs" in results:
+        logger.info(f"Task outputs available: {list(results['task_outputs'].keys())}")
+    
+    video_id = results.get("video_id", "")
     category = results.get("category", "Unknown")
+    context_tag = results.get("context_tag", "General")
     token_usage = results.get("token_usage", None)
     
+    if not video_id:
+        logger.error("Missing video_id in results")
+        st.error("Analysis results are incomplete. Missing video ID.")
+        return
+    
     # Create a container for video and chat
-    st.markdown("<h2 class='sub-header'>Video & Chat</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 class='sub-header'>🎬 Video & Chat</h2>", unsafe_allow_html=True)
     
     # Create columns for video and chat
     video_chat_cols = st.columns([1, 1])
@@ -1129,10 +1606,10 @@ def display_analysis_results(results: Dict[str, Any]):
     with video_chat_cols[0]:
         # Display embedded YouTube video with API enabled
         st.markdown(f'''
-        <div>
+        <div style="border-radius: 12px; overflow: hidden; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);">
             <iframe id="youtube-player" 
                     width="100%" 
-                    height="450" 
+                    height="380" 
                     src="https://www.youtube.com/embed/{video_id}?rel=0&modestbranding=1" 
                     frameborder="0" 
                     allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
@@ -1144,47 +1621,298 @@ def display_analysis_results(results: Dict[str, Any]):
     with video_chat_cols[1]:
         # Display chat interface
         if "chat_enabled" in st.session_state and st.session_state.chat_enabled:
-            display_chat_interface()
+            if "chat_details" in st.session_state and st.session_state.chat_details:
+                display_chat_interface()
+            else:
+                st.markdown("""
+                <div style="background: rgba(255, 177, 66, 0.2); border-left: 4px solid #ffb142; padding: 1.5rem; border-radius: 4px; margin-bottom: 1rem; height: 380px; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center;">
+                    <h3 style="margin-top: 0; color: #ffb142;">Chat Details Not Found</h3>
+                    <p style="color: #e0e0e0;">The chat functionality could not be initialized properly. Please try analyzing the video again.</p>
+                </div>
+                """, unsafe_allow_html=True)
         else:
-            st.warning("Chat functionality could not be enabled for this video. This could be due to missing API keys or issues with the transcript. Please check your configuration and try again.")
+            st.markdown("""
+            <div style="background: rgba(225, 77, 77, 0.2); border-left: 4px solid #e14d4d; padding: 1.5rem; border-radius: 4px; margin-bottom: 1rem; height: 380px; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center;">
+                <h3 style="margin-top: 0; color: #ff6b6b;">Chat Unavailable</h3>
+                <p style="color: #e0e0e0;">Chat functionality could not be enabled for this video. This could be due to missing API keys or issues with the transcript. Please check your configuration and try again.</p>
+            </div>
+            """, unsafe_allow_html=True)
     
     # Create a container for analysis content
-    st.markdown("<h2 class='sub-header'>Analysis Results</h2>", unsafe_allow_html=True)
+    if category and category != "Unknown":
+        category_colors = {
+            "Technology": "#3498db",
+            "Business": "#2ecc71",
+            "Education": "#9b59b6",
+            "Entertainment": "#e74c3c",
+            "Science": "#1abc9c",
+            "Health & Wellness": "#e67e22",
+            "News": "#f1c40f",
+            "Sports": "#d35400",
+            "Gaming": "#8e44ad",
+            "Music": "#c0392b",
+            "Travel": "#16a085",
+            "Food": "#f39c12",
+            "Fashion": "#e84393",
+            "Lifestyle": "#6c5ce7"
+        }
+        
+        # Context tag colors using a complementary color scheme
+        context_tag_colors = {
+            "Tutorial": "#4a69bd",      # Blue
+            "News": "#f6b93b",          # Yellow
+            "Review": "#78e08f",        # Green
+            "Case Study": "#fa983a",    # Orange
+            "Interview": "#b71540",     # Red
+            "Opinion Piece": "#8c7ae6", # Purple
+            "How-To Guide": "#e58e26",  # Amber
+            "General": "#95a5a6"        # Gray
+        }
+        
+        color = category_colors.get(category, "#95a5a6")
+        context_color = context_tag_colors.get(context_tag, "#95a5a6")
+        
+        st.markdown(f"""
+        <div style="display: flex; align-items: center; margin-bottom: 1rem;">
+            <h2 class='sub-header' style="margin-bottom: 0; margin-right: 1rem;">📊 Analysis Results</h2>
+            <span style="background-color: {color}; color: white; padding: 0.3rem 0.8rem; border-radius: 20px; font-weight: 600; font-size: 0.9rem; margin-right: 0.5rem;">
+                {category}
+            </span>
+            <span style="background-color: {context_color}; color: white; padding: 0.3rem 0.8rem; border-radius: 20px; font-weight: 600; font-size: 0.9rem;">
+                {context_tag}
+            </span>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown("<h2 class='sub-header'>📊 Analysis Results</h2>", unsafe_allow_html=True)
+    
     analysis_container = st.container()
     
     with analysis_container:
-        # Analysis tabs
-        tabs = st.tabs(["Summary", "Analysis", "Action Plan", "Full Report", "Transcript"])
+        # Analysis tabs with Full Report as the first tab
+        tabs = st.tabs(["📄 Full Report", "✨ Summary", "🔍 Analysis", "📝 Action Plan", "🎙️ Transcript"])
         
         task_outputs = results.get("task_outputs", {})
         
         # Display content in tabs
         with tabs[0]:
-            if "summarize_content" in task_outputs:
-                st.markdown(task_outputs["summarize_content"])
-            else:
-                st.info("Summary not available.")
-        
-        with tabs[1]:
-            if "analyze_content" in task_outputs:
-                st.markdown(task_outputs["analyze_content"])
-            else:
-                st.info("Analysis not available.")
-        
-        with tabs[2]:
-            if "create_action_plan" in task_outputs:
-                st.markdown(task_outputs["create_action_plan"])
-            else:
-                st.info("Action plan not available.")
-        
-        with tabs[3]:
             if "write_report" in task_outputs:
-                st.markdown(task_outputs["write_report"])
+                # Pre-process the report content to enhance formatting
+                report_content = sanitize_html_content(task_outputs["write_report"])
+                
+                # Define regex patterns
+                header_pattern = r'(?m)^(#{1,3})\s+(.+)$'
+                bullet_pattern = r'(?m)^- (.+)$'
+                numbered_list_pattern = r'(?m)^([0-9]+)\. (.+)$'
+                list_wrap_pattern = r'(<li [^>]*>.*?</li>(\s*<li [^>]*>.*?</li>)*)'
+                blockquote_pattern = r'(?m)^>\s*(.+)$'
+                # More robust pattern for bold text
+                bold_pattern = r'\*\*(.*?)\*\*'
+                # Pattern for bold section headers with colons
+                bold_section_pattern = r'\*\*(.*?)\*\*\s*:'
+                # Pattern for custom HTML header tags
+                custom_header_pattern = r'<h##\s+style="[^"]*">(.*?)</h##>'
+                # Pattern for malformed header tags from the example
+                malformed_header_pattern = r'<h##\s+style="([^"]*)">([^<]+)</h##>'
+                
+                # First, fix any malformed HTML headers
+                report_content = re.sub(custom_header_pattern, r'<h3 style="color: #4dabf7; margin-top: 1.5rem; margin-bottom: 1rem;">\1</h3>', report_content)
+                report_content = re.sub(malformed_header_pattern, r'<h3 style="\1">\2</h3>', report_content)
+                
+                # Apply standard markdown formatting
+                report_content = re.sub(header_pattern, r'<h3 style="color: #4dabf7; margin-top: 1.5rem; margin-bottom: 1rem;">\2</h3>', report_content)
+                report_content = report_content.replace('<h# ', '<h3 ').replace('</h# ', '</h3 ')
+                report_content = re.sub(bullet_pattern, r'<li style="margin-bottom: 0.8rem;">\1</li>', report_content)
+                report_content = re.sub(numbered_list_pattern, r'<li style="margin-bottom: 0.8rem;">\2</li>', report_content)
+                
+                # Handle bold section headers with colons first (more specific pattern)
+                report_content = re.sub(bold_section_pattern, r'<h4 style="color: #4dabf7; margin-top: 1.5rem; margin-bottom: 0.5rem; font-size: 1.1rem;">\1:</h4>', report_content)
+                
+                # Handle remaining bold text
+                report_content = re.sub(bold_pattern, r'<strong style="color: #4dabf7;">\1</strong>', report_content)
+                
+                # Wrap lists in ul tags if they're not already
+                if '<li ' in report_content and '<ul>' not in report_content:
+                    report_content = re.sub(list_wrap_pattern, r'<ul style="margin-left: 1.5rem; margin-bottom: 1.5rem;">\1</ul>', report_content, flags=re.DOTALL)
+                
+                # Format blockquotes
+                report_content = re.sub(blockquote_pattern, r'<blockquote style="border-left: 3px solid #4dabf7; padding-left: 1rem; margin-left: 0; color: #aaaaaa; font-style: italic;">\1</blockquote>', report_content)
+                
+                st.markdown(f"""
+                <div class="card" style="background: #1E1E1E; border-radius: 8px; padding: 1.5rem; border: 1px solid #333; margin-top: 1rem;">
+                    <div style="color: #e0e0e0; line-height: 1.6; font-size: 1rem;">
+                        {report_content}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
             else:
                 st.info("Full report not available.")
         
+        with tabs[1]:
+            if "summarize_content" in task_outputs:
+                # Pre-process the summary content to enhance formatting
+                summary_content = sanitize_html_content(task_outputs["summarize_content"])
+                
+                # Define regex patterns
+                tl_dr_pattern = r'(\*\*TL;DR:\*\*|\*\*TL;DR\*\*|TL;DR:)'
+                key_points_pattern = r'(Key Points:|Key Takeaways:|Main Points:)'
+                bullet_pattern = r'(?m)^- (.+)$'
+                numbered_list_pattern = r'(?m)^([0-9]+)\. (.+)$'
+                list_wrap_pattern = r'(<li [^>]*>.*?</li>(\s*<li [^>]*>.*?</li>)*)'
+                nested_list_pattern = r'(<li class="nested-item"[^>]*>.*?</li>(\s*<li class="nested-item"[^>]*>.*?</li>)*)'
+                # More robust pattern for bold text
+                bold_pattern = r'\*\*(.*?)\*\*'
+                # Pattern for bold section headers with colons
+                bold_section_pattern = r'\*\*(.*?)\*\*\s*:'
+                # Pattern for custom HTML header tags
+                custom_header_pattern = r'<h##\s+style="[^"]*">(.*?)</h##>'
+                # Pattern for malformed header tags from the example
+                malformed_header_pattern = r'<h##\s+style="([^"]*)">([^<]+)</h##>'
+                
+                # Fix malformed HTML headers
+                summary_content = re.sub(custom_header_pattern, r'<h3 style="color: #4dabf7; margin-top: 1.5rem; margin-bottom: 1rem;">\1</h3>', summary_content)
+                summary_content = re.sub(malformed_header_pattern, r'<h3 style="\1">\2</h3>', summary_content)
+                
+                # Apply formatting
+                summary_content = re.sub(tl_dr_pattern, '<h3 style="color: #4dabf7; margin-top: 0.5rem; margin-bottom: 1rem;">TL;DR:</h3>', summary_content)
+                summary_content = re.sub(key_points_pattern, '<h3 style="color: #4dabf7; margin-top: 1.5rem; margin-bottom: 1rem;">Key Points:</h3>', summary_content)
+                summary_content = re.sub(bullet_pattern, r'<li style="margin-bottom: 0.8rem;">\1</li>', summary_content)
+                summary_content = re.sub(numbered_list_pattern, r'<li style="margin-bottom: 0.8rem;">\2</li>', summary_content)
+                
+                # Handle bold section headers with colons first (more specific pattern)
+                summary_content = re.sub(bold_section_pattern, r'<h4 style="color: #4dabf7; margin-top: 1.5rem; margin-bottom: 0.5rem; font-size: 1.1rem;">\1:</h4>', summary_content)
+                
+                # Handle bold text that isn't part of a header
+                summary_content = re.sub(bold_pattern, r'<strong style="color: #4dabf7;">\1</strong>', summary_content)
+                
+                # Handle nested lists first
+                if '<li class="nested-item"' in summary_content:
+                    summary_content = re.sub(nested_list_pattern, r'<ul class="nested-list" style="margin-left: 1.5rem; margin-bottom: 0.5rem;">\1</ul>', summary_content, flags=re.DOTALL)
+                
+                # Wrap lists in ul tags if they're not already
+                if '<li ' in summary_content and '<ul>' not in summary_content:
+                    summary_content = re.sub(list_wrap_pattern, r'<ul style="margin-left: 1.5rem; margin-bottom: 1.5rem;">\1</ul>', summary_content, flags=re.DOTALL)
+                
+                st.markdown(f"""
+                <div class="card" style="background: #1E1E1E; border-radius: 8px; padding: 1.5rem; border: 1px solid #333; margin-top: 1rem;">
+                    <div style="color: #e0e0e0; line-height: 1.6; font-size: 1rem;">
+                        {summary_content}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.info("Summary not available.")
+        
+        with tabs[2]:
+            if "analyze_content" in task_outputs:
+                # Pre-process the analysis content to enhance formatting
+                analysis_content = sanitize_html_content(task_outputs["analyze_content"])
+                
+                # Define regex patterns
+                header_pattern = r'(?m)^(#{2,3})\s+(.+)$'
+                bullet_pattern = r'(?m)^- (.+)$'
+                numbered_list_pattern = r'(?m)^([0-9]+)\. (.+)$'
+                list_wrap_pattern = r'(<li [^>]*>.*?</li>(\s*<li [^>]*>.*?</li>)*)'
+                nested_list_pattern = r'(<li class="nested-item"[^>]*>.*?</li>(\s*<li class="nested-item"[^>]*>.*?</li>)*)'
+                # More robust pattern for bold text
+                bold_pattern = r'\*\*(.*?)\*\*'
+                # Pattern for bold section headers with colons
+                bold_section_pattern = r'\*\*(.*?)\*\*\s*:'
+                # Pattern for custom HTML header tags
+                custom_header_pattern = r'<h##\s+style="[^"]*">(.*?)</h##>'
+                # Pattern for malformed header tags from the example
+                malformed_header_pattern = r'<h##\s+style="([^"]*)">([^<]+)</h##>'
+                
+                # First, fix any malformed HTML headers
+                analysis_content = re.sub(custom_header_pattern, r'<h3 style="color: #4dabf7; margin-top: 1.5rem; margin-bottom: 1rem;">\1</h3>', analysis_content)
+                analysis_content = re.sub(malformed_header_pattern, r'<h3 style="\1">\2</h3>', analysis_content)
+                
+                # Apply standard formatting
+                analysis_content = re.sub(header_pattern, r'<h3 style="color: #4dabf7; margin-top: 1.5rem; margin-bottom: 1rem;">\2</h3>', analysis_content)
+                analysis_content = re.sub(bullet_pattern, r'<li style="margin-bottom: 0.8rem;">\1</li>', analysis_content)
+                analysis_content = re.sub(numbered_list_pattern, r'<li style="margin-bottom: 0.8rem;">\2</li>', analysis_content)
+                
+                # Handle bold section headers with colons first (more specific pattern)
+                analysis_content = re.sub(bold_section_pattern, r'<h4 style="color: #4dabf7; margin-top: 1.5rem; margin-bottom: 0.5rem; font-size: 1.1rem;">\1:</h4>', analysis_content)
+                
+                # Handle remaining bold text
+                analysis_content = re.sub(bold_pattern, r'<strong style="color: #4dabf7;">\1</strong>', analysis_content)
+                
+                # Handle nested lists first
+                if '<li class="nested-item"' in analysis_content:
+                    analysis_content = re.sub(nested_list_pattern, r'<ul class="nested-list" style="margin-left: 1.5rem; margin-bottom: 0.5rem;">\1</ul>', analysis_content, flags=re.DOTALL)
+                
+                # Wrap lists in ul tags if they're not already
+                if '<li ' in analysis_content and '<ul>' not in analysis_content:
+                    analysis_content = re.sub(list_wrap_pattern, r'<ul style="margin-left: 1.5rem; margin-bottom: 1.5rem;">\1</ul>', analysis_content, flags=re.DOTALL)
+                
+                st.markdown(f"""
+                <div class="card" style="background: #1E1E1E; border-radius: 8px; padding: 1.5rem; border: 1px solid #333; margin-top: 1rem;">
+                    <div style="color: #e0e0e0; line-height: 1.6; font-size: 1rem;">
+                        {analysis_content}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.info("Analysis not available.")
+        
+        with tabs[3]:
+            if "create_action_plan" in task_outputs:
+                # Pre-process the action plan content to enhance formatting
+                action_plan_content = sanitize_html_content(task_outputs["create_action_plan"])
+                
+                # Define regex patterns
+                header_pattern = r'(?m)^(#{2,3})\s+(.+)$'
+                action_header_pattern = r'(Action Plan:|Recommended Actions:|Next Steps:)'
+                bullet_pattern = r'(?m)^- (.+)$'
+                numbered_list_pattern = r'(?m)^([0-9]+)\. (.+)$'
+                list_wrap_pattern = r'(<li [^>]*>.*?</li>(\s*<li [^>]*>.*?</li>)*)'
+                nested_list_pattern = r'(<li class="nested-item"[^>]*>.*?</li>(\s*<li class="nested-item"[^>]*>.*?</li>)*)'
+                # More robust pattern for bold text
+                bold_pattern = r'\*\*(.*?)\*\*'
+                # Pattern for bold section headers with colons
+                bold_section_pattern = r'\*\*(.*?)\*\*\s*:'
+                # Pattern for custom HTML header tags
+                custom_header_pattern = r'<h##\s+style="[^"]*">(.*?)</h##>'
+                # Pattern for malformed header tags from the example
+                malformed_header_pattern = r'<h##\s+style="([^"]*)">([^<]+)</h##>'
+                
+                # First, fix any malformed HTML headers
+                action_plan_content = re.sub(custom_header_pattern, r'<h3 style="color: #4dabf7; margin-top: 1.5rem; margin-bottom: 1rem;">\1</h3>', action_plan_content)
+                action_plan_content = re.sub(malformed_header_pattern, r'<h3 style="\1">\2</h3>', action_plan_content)
+                
+                # Apply formatting
+                action_plan_content = re.sub(header_pattern, r'<h3 style="color: #4dabf7; margin-top: 1.5rem; margin-bottom: 1rem;">\2</h3>', action_plan_content)
+                action_plan_content = re.sub(action_header_pattern, r'<h3 style="color: #4dabf7; margin-top: 1rem; margin-bottom: 1rem;">\1</h3>', action_plan_content)
+                action_plan_content = re.sub(bullet_pattern, r'<li style="margin-bottom: 0.8rem;">\1</li>', action_plan_content)
+                action_plan_content = re.sub(numbered_list_pattern, r'<li style="margin-bottom: 0.8rem;">\2</li>', action_plan_content)
+                
+                # Handle bold section headers with colons first (more specific pattern)
+                action_plan_content = re.sub(bold_section_pattern, r'<h4 style="color: #4dabf7; margin-top: 1.5rem; margin-bottom: 0.5rem; font-size: 1.1rem;">\1:</h4>', action_plan_content)
+                
+                # Handle remaining bold text
+                action_plan_content = re.sub(bold_pattern, r'<strong style="color: #4dabf7;">\1</strong>', action_plan_content)
+                
+                # Handle nested lists first
+                if '<li class="nested-item"' in action_plan_content:
+                    action_plan_content = re.sub(nested_list_pattern, r'<ul class="nested-list" style="margin-left: 1.5rem; margin-bottom: 0.5rem;">\1</ul>', action_plan_content, flags=re.DOTALL)
+                
+                # Wrap lists in ul tags if they're not already
+                if '<li ' in action_plan_content and '<ul>' not in action_plan_content:
+                    action_plan_content = re.sub(list_wrap_pattern, r'<ul style="margin-left: 1.5rem; margin-bottom: 1.5rem;">\1</ul>', action_plan_content, flags=re.DOTALL)
+                
+                st.markdown(f"""
+                <div class="card" style="background: #1E1E1E; border-radius: 8px; padding: 1.5rem; border: 1px solid #333; margin-top: 1rem;">
+                    <div style="color: #e0e0e0; line-height: 1.6; font-size: 1rem;">
+                        {action_plan_content}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.info("Action plan not available.")
+        
         with tabs[4]:
-            st.markdown("### Video Transcript")
+            st.markdown("<h3 style='margin-bottom: 1rem;'>Video Transcript</h3>", unsafe_allow_html=True)
             
             # Add toggles for timestamps
             col_a, col_b, col_c = st.columns([1, 1, 1])
@@ -1199,7 +1927,30 @@ def display_analysis_results(results: Dict[str, Any]):
                 else:
                     # Try to get transcript with timestamps
                     try:
-                        timestamped_transcript, transcript_list = get_transcript_with_timestamps(results["url"])
+                        # Check if URL is available in results, otherwise use video_id
+                        if "url" in results and results["url"]:
+                            youtube_url = results["url"]
+                        elif "youtube_url" in results and results["youtube_url"]:
+                            youtube_url = results["youtube_url"]
+                        else:
+                            # Construct a URL from the video_id
+                            youtube_url = f"https://youtu.be/{video_id}"
+                            
+                        logger.info(f"Retrieving transcript for URL: {youtube_url}")
+                        
+                        # Get cache setting safely
+                        use_cache = True  # Default value
+                        if "settings" in st.session_state and isinstance(st.session_state.settings, dict):
+                            use_cache = st.session_state.settings.get("use_cache", True)
+                        
+                        timestamped_transcript, transcript_list, error = process_transcript_async(
+                            youtube_url, 
+                            use_cache=use_cache
+                        )
+                        
+                        if error:
+                            raise ValueError(error)
+                            
                         st.session_state.timestamped_transcript = timestamped_transcript
                         st.session_state.transcript_list = transcript_list
                         
@@ -1218,7 +1969,7 @@ def display_analysis_results(results: Dict[str, Any]):
     
     # Display token usage if available
     if token_usage:
-        st.markdown("<h2 class='sub-header'>Token Usage</h2>", unsafe_allow_html=True)
+        st.markdown("<h2 class='sub-header'>📈 Token Usage</h2>", unsafe_allow_html=True)
         token_container = st.container()
         
         with token_container:
@@ -1238,103 +1989,69 @@ def display_analysis_results(results: Dict[str, Any]):
                 # If token_usage is a string, try to parse it
                 try:
                     # Check if it's a string that contains token information
-                    if isinstance(str(token_usage), str):
-                        # Extract token counts using regex
-                        import re
+                    token_text = str(token_usage)
+                    
+                    # Try to extract token counts
+                    total_match = re.search(r'total_tokens=(\d+)', token_text)
+                    prompt_match = re.search(r'prompt_tokens=(\d+)', token_text)
+                    completion_match = re.search(r'completion_tokens=(\d+)', token_text)
+                    
+                    if total_match or prompt_match or completion_match:
+                        # Create 3 columns for metrics
+                        col1, col2, col3 = st.columns(3)
                         
-                        # Try to extract token counts
-                        total_match = re.search(r'total_tokens=(\d+)', token_usage)
-                        prompt_match = re.search(r'prompt_tokens=(\d+)', token_usage)
-                        completion_match = re.search(r'completion_tokens=(\d+)', token_usage)
-                        cached_prompt_match = re.search(r'cached_prompt_tokens=(\d+)', token_usage)
-                        successful_requests_match = re.search(r'successful_requests=(\d+)', token_usage)
+                        with col1:
+                            prompt_tokens = int(prompt_match.group(1)) if prompt_match else "N/A"
+                            st.metric("Prompt Tokens", prompt_tokens, delta=None, delta_color="normal")
                         
-                        if total_match or prompt_match or completion_match:
-                            # Create 5 columns for all metrics
-                            col1, col2, col3, col4, col5 = st.columns(5)
-                            
-                            with col1:
-                                prompt_tokens = int(prompt_match.group(1)) if prompt_match else "N/A"
-                                st.metric("Prompt Tokens", prompt_tokens, delta=None, delta_color="normal")
-                            
-                            with col2:
-                                completion_tokens = int(completion_match.group(1)) if completion_match else "N/A"
-                                st.metric("Completion Tokens", completion_tokens, delta=None, delta_color="normal")
-                            
-                            with col3:
-                                total_tokens = int(total_match.group(1)) if total_match else "N/A"
-                                st.metric("Total Tokens", total_tokens, delta=None, delta_color="normal")
-                            
-                            with col4:
-                                if cached_prompt_match:
-                                    cached_tokens = int(cached_prompt_match.group(1))
-                                    st.metric("Cached Prompt Tokens", cached_tokens, delta=None, delta_color="normal")
-                            
-                            with col5:
-                                if successful_requests_match:
-                                    requests = int(successful_requests_match.group(1))
-                                    st.metric("API Requests", requests, delta=None, delta_color="normal")
-                        else:
-                            # Just display as is
-                            st.markdown(f"<div style='text-align: center; font-size: 1.2rem;'>{token_usage}</div>", unsafe_allow_html=True)
+                        with col2:
+                            completion_tokens = int(completion_match.group(1)) if completion_match else "N/A"
+                            st.metric("Completion Tokens", completion_tokens, delta=None, delta_color="normal")
+                        
+                        with col3:
+                            total_tokens = int(total_match.group(1)) if total_match else "N/A"
+                            st.metric("Total Tokens", total_tokens, delta=None, delta_color="normal")
                     else:
-                        # Just display as is
-                        st.markdown(f"<div style='text-align: center; font-size: 1.2rem;'>{token_usage}</div>", unsafe_allow_html=True)
+                        # Just display the raw token information
+                        st.text(f"Token Usage: {token_usage}")
                 except Exception as e:
-                    # If parsing fails, just display as is
-                    st.markdown(f"<div style='text-align: center; font-size: 1.2rem;'>{token_usage}</div>", unsafe_allow_html=True)
-            
-            # Add timestamp and time taken for analysis
-            if "timestamp" in results:
-                # Calculate time taken if we have the start time
-                time_taken_text = ""
-                if "analysis_start_time" in st.session_state and st.session_state.analysis_start_time:
-                    try:
-                        # Parse the timestamp from results
-                        if isinstance(results["timestamp"], str):
-                            end_time = datetime.strptime(results["timestamp"], "%Y-%m-%d %H:%M:%S")
-                        else:
-                            end_time = results["timestamp"]
-                        
-                        start_time = st.session_state.analysis_start_time
-                        
-                        # Check if this is a cached analysis
-                        if "is_cached" in results and results["is_cached"]:
-                            # For cached analysis, show a quick retrieval time
-                            time_taken_text = " (retrieved in 0 min 3 sec)"
-                        else:
-                            # For fresh analysis, calculate the actual time
-                            time_taken = end_time - start_time
-                            # Calculate minutes and seconds
-                            minutes, seconds = divmod(int(time_taken.total_seconds()), 60)
-                            time_taken_text = f" (completed in {minutes} min {seconds} sec)"
-                    except Exception as e:
-                        logger.warning(f"Error calculating analysis time: {str(e)}")
-                        # Use a reasonable default time
-                        time_taken_text = " (completed in 2 min 30 sec)"
-                
-                st.markdown(f"<div class='metadata' style='text-align: center; margin-top: 10px; font-style: italic; color: #888;'>Analysis completed on {results['timestamp']}{time_taken_text}</div>", unsafe_allow_html=True)
+                    # If any error occurs, just display the raw token information
+                    st.text(f"Token Usage: {token_usage}")
 
 # Add this function to convert transcript list to text format
 def convert_transcript_list_to_text(transcript_list):
     """
-    Convert a transcript list to a plain text format.
+    Convert a transcript list to plain text.
     
     Args:
-        transcript_list: List of transcript segments with start time and text
+        transcript_list: A list of transcript segments with 'text' keys
         
     Returns:
         Plain text transcript
     """
+    # Check if already a string
+    if isinstance(transcript_list, str):
+        return transcript_list
+        
+    # Check if None or empty
     if not transcript_list:
+        logger.warning("No transcript list to convert")
         return ""
     
-    text_parts = []
-    for item in transcript_list:
-        if isinstance(item, dict) and 'text' in item:
-            text_parts.append(item['text'])
+    try:
+        # Convert list to text
+        plain_text = ""
+        for item in transcript_list:
+            if isinstance(item, dict) and 'text' in item:
+                plain_text += item.get('text', '') + " "
+            elif isinstance(item, str):
+                plain_text += item + " "
+        
+        return plain_text.strip()
     
-    return " ".join(text_parts)
+    except Exception as e:
+        logger.exception(f"Error converting transcript list to text: {str(e)}")
+        return ""
 
 def check_agent_streaming_support(agent):
     """
@@ -1447,8 +2164,39 @@ def check_agent_streaming_support(agent):
     return False, None
 
 def main():
-    """Main function to run the Streamlit app."""
-    # Load custom CSS
+    """Main function to run the web application."""
+    # Set up logging
+    logging.basicConfig(level=logging.INFO)
+    
+    # Initialize session state variables if they don't exist
+    if "settings" not in st.session_state:
+        st.session_state.settings = {
+            "model": "gpt-4o-mini",
+            "temperature": 0.7,
+            "use_cache": True
+        }
+        logger.info("Initialized default settings in session state")
+    
+    # Initialize session state variables
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+    
+    if "show_auth" not in st.session_state:
+        st.session_state.show_auth = False
+        
+    if "chat_enabled" not in st.session_state:
+        st.session_state.chat_enabled = False
+        
+    if "chat_messages" not in st.session_state:
+        st.session_state.chat_messages = []
+        
+    if "analysis_complete" not in st.session_state:
+        st.session_state.analysis_complete = False
+        
+    if "analysis_results" not in st.session_state:
+        st.session_state.analysis_results = None
+    
+    # Setup CSS and UI components
     load_css()
     
     # Initialize authentication state
@@ -1512,10 +2260,10 @@ def main():
     
     # Setup sidebar with configuration
     with st.sidebar:
-        st.title("Configuration")
+        st.markdown("<h1 style='text-align: center; margin-bottom: 1.5rem;'>⚙️ Settings</h1>", unsafe_allow_html=True)
         
         # Model selection
-        st.subheader("Select Model")
+        st.markdown("<h3 style='margin-bottom: 0.5rem;'>AI Model</h3>", unsafe_allow_html=True)
         model = st.selectbox(
             label="AI Model",
             options=["gpt-4o-mini", "gpt-3.5-turbo", "gpt-4"],
@@ -1524,20 +2272,23 @@ def main():
         )
         
         # Temperature setting
-        st.subheader("Temperature")
+        st.markdown("<h3 style='margin-top: 1rem; margin-bottom: 0.5rem;'>Creativity Level</h3>", unsafe_allow_html=True)
         temperature = st.slider(
             label="Temperature Value",
             min_value=0.0,
             max_value=1.0,
             value=0.7,
             step=0.1,
-            label_visibility="collapsed"
+            label_visibility="collapsed",
+            help="Higher values make output more creative, lower values make it more deterministic"
         )
         
         # Cache toggle
+        st.markdown("<h3 style='margin-top: 1rem; margin-bottom: 0.5rem;'>Performance</h3>", unsafe_allow_html=True)
         use_cache = st.checkbox(
-            label="Use Cache",
-            value=True
+            label="Use Cache (Faster Analysis)",
+            value=True,
+            help="Enable caching for faster repeated analysis of the same videos"
         )
         
         # Store settings in session state
@@ -1547,26 +2298,25 @@ def main():
             "use_cache": use_cache
         })
         
+        # For debugging
+        logger.info(f"Settings updated in sidebar: model={model}, temperature={temperature}, use_cache={use_cache}")
+        
         # Set environment variables based on settings
         os.environ["LLM_MODEL"] = model
         os.environ["LLM_TEMPERATURE"] = str(temperature)
         
         # Analysis settings section
-        st.markdown("---")
-        st.subheader("Analysis Settings")
+        st.markdown("<hr style='margin: 1.5rem 0;'>", unsafe_allow_html=True)
+        st.markdown("<h3 style='margin-bottom: 1rem;'>Analysis Options</h3>", unsafe_allow_html=True)
         
         # Reset chat button (if chat is enabled)
         if st.session_state.chat_enabled:
-            if st.button("Reset Chat", key="reset_chat"):
+            if st.button("🔄 Reset Chat", key="reset_chat"):
                 st.session_state.chat_messages = []
                 # Re-initialize welcome message
                 if st.session_state.chat_details and "title" in st.session_state.chat_details:
-                    has_timestamps = st.session_state.chat_details.get("has_timestamps", False)
                     video_title = st.session_state.chat_details.get("title", "this YouTube video")
-                    
-                    welcome_message = f"Hello! I'm your AI assistant for the video \"{video_title}\". Ask me any questions about the content, and I'll do my best to answer based on the transcript."
-                    if has_timestamps:
-                        welcome_message += " I'll include timestamps [MM:SS] in my answers to help you locate information in the video."
+                    welcome_message = f"Hello! I'm your AI assistant for the video \"{video_title}\". Ask me any questions about the content, and I'll do my best to answer based on the transcript. I'll include timestamps [MM:SS] in my answers to help you locate information in the video."
                     
                     st.session_state.chat_messages = [
                         {
@@ -1578,7 +2328,7 @@ def main():
         
         # Reset analysis button (if analysis is complete)
         if st.session_state.analysis_complete:
-            if st.button("New Analysis", key="new_analysis"):
+            if st.button("🔄 New Analysis", key="new_analysis"):
                 # Reset all relevant state
                 st.session_state.chat_enabled = False
                 st.session_state.chat_messages = []
@@ -1592,9 +2342,11 @@ def main():
                 
             # Clear cache button (only shown if a video has been analyzed)
             if "video_id" in st.session_state and st.session_state.video_id:
-                if st.button("Clear Cache for This Video", key="clear_cache"):
+                if st.button("🧹 Clear Cache", key="clear_cache"):
                     video_id = st.session_state.video_id
-                    if clear_analysis_cache(video_id):
+                    # Import clear_analysis_cache from the proper module
+                    from src.youtube_analysis.utils.cache_utils import clear_analysis_cache as clear_cache_function
+                    if clear_cache_function(video_id):
                         st.success(f"Cache cleared for video {video_id}")
                         # Reset analysis state to force a fresh analysis
                         st.session_state.analysis_complete = False
@@ -1605,23 +2357,23 @@ def main():
                         st.info("No cached analysis found for this video")
         
         # Display version
-        st.markdown(f"v{VERSION}")
+        st.markdown(f"<div style='text-align: center; margin-top: 2rem; opacity: 0.7;'>v{VERSION}</div>", unsafe_allow_html=True)
         
         # User account section - moved to bottom
-        st.markdown("---")
-        st.subheader("User Account")
+        st.markdown("<hr style='margin: 1.5rem 0;'>", unsafe_allow_html=True)
+        st.markdown("<h3 style='margin-bottom: 1rem;'>👤 User Account</h3>", unsafe_allow_html=True)
         
         # Get current user
         user = get_current_user()
         
         if user:
-            st.write(f"Logged in as: {user.email}")
-            if st.button("Logout"):
+            st.markdown(f"<p style='margin-bottom: 1rem;'>Logged in as: <b>{user.email}</b></p>", unsafe_allow_html=True)
+            if st.button("🚪 Logout"):
                 logout()
                 st.rerun()
         else:
-            st.write("Not logged in")
-            if st.button("Login/Sign Up"):
+            st.markdown("<p style='margin-bottom: 1rem;'>Not logged in</p>", unsafe_allow_html=True)
+            if st.button("🔑 Login/Sign Up"):
                 st.session_state.show_auth = True
     
     # Display auth UI if needed
@@ -1630,25 +2382,316 @@ def main():
         return
     
     # Main app content
-    st.title("YouTube Video Analyzer & Chat")
-    
     # Only show welcome text and input fields if analysis is not complete
     if not st.session_state.analysis_complete:
-        st.write("Extract insights, summaries, and action plans from any YouTube video. Chat with the video content to learn more!")
+        # write the title here and center it
+        st.markdown("<h1 style='text-align: center; margin: 0 auto; width: 100%;'>VideoGenius AI ✨</h1>", unsafe_allow_html=True)
+        # Create a two-column layout for the header and URL input
+        header_col, input_col = st.columns([1, 1])
         
-        # URL input and analysis button
-        st.subheader("Enter YouTube URL")
-        url = st.text_input(
-            label="YouTube URL",
-            placeholder="Enter YouTube URL (e.g., https://youtu.be/...)",
-            label_visibility="collapsed"
-        )
+        with header_col:
+            # Hero section with animated gradient
+            st.markdown("""
+            <div style="position: relative; height: 100%; padding: 2rem 0; overflow: hidden; border-radius: 12px; background: linear-gradient(45deg, #1a1a1a, #232323);">
+                <div style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: radial-gradient(circle at 30% 30%, rgba(77, 171, 247, 0.1), transparent 70%); z-index: 1;"></div>
+                <div style="position: relative; z-index: 2; padding: 1.5rem; text-align: center;">
+                    <p style="font-size: 1.2rem; color: #e0e0e0; max-width: 800px; margin: 0 auto 1.5rem auto; line-height: 1.6;">
+                        Unlock hidden insights in any YouTube video with AI-powered analysis
+                    </p>
+                    <div style="width: 80px; height: 3px; background: #4dabf7; margin: 0 auto 1.5rem auto; border-radius: 2px;"></div>
+                    <div style="display: flex; justify-content: center; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap;">
+                        <div style="display: flex; align-items: center; background: rgba(77, 171, 247, 0.1); padding: 0.5rem 0.8rem; border-radius: 8px; border: 1px solid rgba(77, 171, 247, 0.2);">
+                            <span style="font-size: 1.2rem; margin-right: 0.5rem;">🔍</span>
+                            <span style="color: #e0e0e0; font-size: 0.9rem;">Smart Analysis</span>
+                        </div>
+                        <div style="display: flex; align-items: center; background: rgba(77, 171, 247, 0.1); padding: 0.5rem 0.8rem; border-radius: 8px; border: 1px solid rgba(77, 171, 247, 0.2);">
+                            <span style="font-size: 1.2rem; margin-right: 0.5rem;">💬</span>
+                            <span style="color: #e0e0e0; font-size: 0.9rem;">Interactive Chat</span>
+                        </div>
+                        <div style="display: flex; align-items: center; background: rgba(77, 171, 247, 0.1); padding: 0.5rem 0.8rem; border-radius: 8px; border: 1px solid rgba(77, 171, 247, 0.2);">
+                            <span style="font-size: 1.2rem; margin-right: 0.5rem;">📊</span>
+                            <span style="color: #e0e0e0; font-size: 0.9rem;">Detailed Insights</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
         
-        if url:
-            if not validate_youtube_url(url):
-                st.error("Please enter a valid YouTube URL")
-                return
+        with input_col:
+            # Use a native Streamlit form for better UX
+            # Write about getting started here
+            st.markdown("""
+            <div style="background: #232323; padding: 1.5rem; border-radius: 12px; border: 1px solid #333333; margin: 1.5rem 0; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);">
+                <h3 style="color: #4dabf7; margin-bottom: 1rem;">Getting Started</h3>
+                <p>Paste any YouTube URL in the input field above and click Enter.</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+            url = st.text_input(
+                label="Enter YouTube URL",
+                placeholder="Paste YouTube URL here (e.g., https://youtu.be/...)",
+                label_visibility="collapsed",
+            )
             
+            # Handle form submission outside the form
+            if url:
+                if not validate_youtube_url(url):
+                    st.error("Please enter a valid YouTube URL")
+                elif not st.session_state.authenticated:
+                    st.warning("Please log in to analyze videos")
+                    st.session_state.show_auth = True
+                else:
+                    # Rest of the analysis code...
+                    with st.spinner("Analyzing video..."):
+                        try:
+                            # Reset chat state for new analysis
+                            st.session_state.chat_enabled = False
+                            st.session_state.chat_messages = []
+                            st.session_state.chat_details = None
+                            
+                            # Store the analysis start time
+                            st.session_state.analysis_start_time = datetime.now()
+                            
+                            # Create progress placeholder
+                            progress_placeholder = st.empty()
+                            status_placeholder = st.empty()
+                            
+                            # Initialize progress bar
+                            progress_bar = progress_placeholder.progress(0)
+                            status_placeholder.info("Fetching video transcript...")
+                            
+                            # Define progress update functions
+                            def update_progress(value):
+                                try:
+                                    # Use thread-safe approach for Streamlit updates
+                                    import streamlit as st
+                                    from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+                                    
+                                    # Only update if there's a valid context
+                                    if get_script_run_ctx():
+                                        progress_bar.progress(value)
+                                except Exception as e:
+                                    # Silently fail if we can't update the progress bar
+                                    pass
+                            
+                            def update_status(message):
+                                try:
+                                    # Use thread-safe approach for Streamlit updates
+                                    import streamlit as st
+                                    from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+                                    
+                                    # Only update if there's a valid context
+                                    if get_script_run_ctx():
+                                        status_placeholder.info(message)
+                                except Exception as e:
+                                    # Silently fail if we can't update the status
+                                    pass
+                            
+                            # Run the analysis
+                            try:
+                                # Get cache setting from session state
+                                use_cache = st.session_state.settings.get("use_cache", True)
+                                
+                                # Get video transcript
+                                timestamped_transcript, transcript_list, error = process_transcript_async(
+                                    url, 
+                                    use_cache=use_cache
+                                )
+                                
+                                if error:
+                                    st.error(f"Error: {error}")
+                                    return
+                                
+                                if not timestamped_transcript or not transcript_list:
+                                    st.error("Could not process video transcript. Please try another video.")
+                                    return
+                                
+                                # Get video info
+                                video_info = get_video_info(url)
+                                if not video_info:
+                                    st.warning("Could not fetch complete video information. Continuing with limited data.")
+                                    video_info = {
+                                        "title": "Unknown Title",
+                                        "description": "No description available",
+                                        "channel": "Unknown Channel",
+                                        "views": "Unknown",
+                                        "likes": "Unknown",
+                                        "published": "Unknown"
+                                    }
+                                
+                                # Update progress
+                                update_progress(10)
+                                update_status("Analyzing transcript...")
+                                
+                                # Convert transcript to text
+                                transcript_text = convert_transcript_list_to_text(transcript_list)
+                                
+                                # Extract video ID
+                                video_id = extract_video_id(url)
+                                
+                                # Store in session state
+                                st.session_state.video_id = video_id
+                                st.session_state.video_url = url
+                                st.session_state.video_info = video_info
+                                st.session_state.transcript_list = transcript_list
+                                st.session_state.transcript_text = transcript_text
+                                
+                                # Run analysis with timeout
+                                try:
+                                    # Get settings from session state BEFORE creating the thread
+                                    use_cache = st.session_state.settings.get("use_cache", True)
+                                    model = st.session_state.settings.get("model", "gpt-4o-mini")
+                                    temperature = st.session_state.settings.get("temperature", 0.7)
+                                    
+                                    # Set environment variables based on settings
+                                    os.environ["LLM_MODEL"] = model
+                                    os.environ["LLM_TEMPERATURE"] = str(temperature)
+                                    
+                                    logger.info(f"Using settings from UI: model={model}, temperature={temperature}, use_cache={use_cache}")
+                                    
+                                    # Force new analysis if checkbox is unchecked
+                                    if not use_cache:
+                                        # Force clear the cache for this video
+                                        from src.youtube_analysis.utils.cache_utils import clear_analysis_cache
+                                        video_id = extract_video_id(url)
+                                        if video_id:
+                                            logger.info(f"Forcing new analysis by clearing cache for video {video_id}")
+                                            clear_analysis_cache(video_id)
+                                    
+                                    # Define function to run analysis
+                                    def run_analysis_with_timeout():
+                                        logger.info(f"Starting analysis with use_cache={use_cache}, url={url}")
+                                        try:
+                                            analysis_result = run_analysis(
+                                                url,  
+                                                update_progress, 
+                                                update_status,
+                                                use_cache=use_cache  # Use the captured value from outside
+                                            )
+                                            # Handle the returned value properly
+                                            if isinstance(analysis_result, tuple) and len(analysis_result) == 2:
+                                                results, error = analysis_result
+                                                logger.info(f"Analysis complete, got result: {type(results)}, {results is not None}")
+                                                return results, error
+                                            else:
+                                                logger.error(f"Unexpected result format from run_analysis: {type(analysis_result)}")
+                                                return None, "Analysis returned unexpected result format"
+                                        except Exception as e:
+                                            logger.error(f"Exception in run_analysis_with_timeout: {str(e)}", exc_info=True)
+                                            return None, str(e)
+                                    
+                                    # Use ThreadPoolExecutor to run with timeout
+                                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                                        # Get current Streamlit run context before submitting to the thread
+                                        from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+                                        ctx = get_script_run_ctx()
+                                        
+                                        # Submit the task to the executor
+                                        future = executor.submit(run_analysis_with_timeout)
+                                        
+                                        # Add the context to the thread
+                                        if ctx:
+                                            add_script_run_ctx(future, ctx)
+                                            
+                                        try:
+                                            # Wait for up to 3 minutes
+                                            results, analysis_error = future.result(timeout=180)
+                                            logger.info(f"Analysis completed with results: {results is not None}, error: {analysis_error}")
+                                        except concurrent.futures.TimeoutError:
+                                            logger.error("Analysis timed out after 3 minutes")
+                                            st.error("Analysis took too long and timed out. Please try again later or try a different video.")
+                                            return
+                                        except Exception as e:
+                                            logger.error(f"Unexpected error during analysis: {str(e)}", exc_info=True)
+                                            st.error(f"An unexpected error occurred: {str(e)}")
+                                            return
+                                    
+                                    # Check for errors
+                                    if analysis_error:
+                                        logger.error(f"Analysis error: {analysis_error}")
+                                        st.error(f"Analysis failed: {analysis_error}")
+                                        return
+                                    
+                                    if not results:
+                                        logger.error("Analysis returned no results")
+                                        st.error("Analysis failed to return results. Try turning off the 'Use Cache' option in settings and try again.")
+                                        return
+                                    
+                                    # Validate that task_outputs exists and has content
+                                    if not isinstance(results, dict) or "task_outputs" not in results or not results["task_outputs"]:
+                                        logger.error(f"Analysis results missing task_outputs: {results}")
+                                        st.error("Analysis didn't generate proper results. Try turning off the 'Use Cache' option in settings and try again.")
+                                        return
+                                        
+                                    # Log task outputs for debugging
+                                    logger.info(f"Task outputs from analysis: {list(results['task_outputs'].keys())}")
+                                        
+                                    # Store results in session state
+                                    logger.info("Storing analysis results in session state")
+                                    st.session_state.analysis_results = results
+                                    st.session_state.analysis_complete = True
+                                
+                                except Exception as timeout_error:
+                                    logger.exception(f"Error during analysis with timeout: {str(timeout_error)}")
+                                    st.error(f"An error occurred during analysis: {str(timeout_error)}")
+                                    return
+                                
+                                # Setup chat for video - this is needed for both cached and non-cached results
+                                try:
+                                    # Import the chat setup function
+                                    from src.youtube_analysis.chat import setup_chat_for_video
+                                    
+                                    # Get transcript from results or session state
+                                    transcript = results.get("transcript", st.session_state.transcript_text)
+                                    
+                                    # Set up chat with the transcript and list
+                                    chat_details = setup_chat_for_video(url, transcript, transcript_list)
+                                    
+                                    if chat_details:
+                                        st.session_state.chat_details = chat_details
+                                        st.session_state.chat_enabled = True
+                                        
+                                        # Create welcome message
+                                        video_title = video_info.get('title', 'this video')
+                                        welcome_message = f"Hello! I'm your AI assistant for the video \"{video_title}\". Ask me any questions about the content, and I'll do my best to answer based on the transcript. I'll include timestamps [MM:SS] in my answers to help you locate information in the video."
+                                        
+                                        # Initialize chat messages
+                                        st.session_state.chat_messages = [
+                                            {
+                                                "role": "assistant", 
+                                                "content": welcome_message
+                                            }
+                                        ]
+                                    else:
+                                        logger.error("Failed to set up chat for video")
+                                        st.session_state.chat_enabled = False
+                                except Exception as chat_setup_error:
+                                    logger.exception(f"Error setting up chat: {str(chat_setup_error)}")
+                                    st.session_state.chat_enabled = False
+                                
+                                # Clear progress
+                                progress_placeholder.progress(100)
+                                time.sleep(0.5)
+                                progress_placeholder.empty()
+                                status_placeholder.empty()
+                                
+                                # Show success message
+                                st.success("Analysis complete!")
+                                logger.info(f"Analysis completed successfully for video: {url}")
+                                
+                                # Force a rerun to update the UI
+                                st.rerun()
+                            except Exception as analysis_error:
+                                logger.exception(f"Exception during analysis: {str(analysis_error)}")
+                                st.error(f"Analysis failed: {str(analysis_error)}")
+                                return
+                        except Exception as e:
+                            logger.exception(f"General error processing video: {str(e)}")
+                            st.error(f"An error occurred: {str(e)}")
+                            return
+        
+        # If URL is provided, show video info
+        if url and validate_youtube_url(url):
             try:
                 # Get video info
                 video_info = get_video_info(url)
@@ -1670,239 +2713,19 @@ def main():
                         st.error("Could not extract video ID from URL")
                         return
                 
-                # Display video info
+                # Display video info with improved styling
+                st.markdown("""
+                <div style="background: #232323; padding: 1.5rem; border-radius: 12px; border: 1px solid #333333; margin: 1.5rem 0; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);">
+                    <h3 style="color: #4dabf7; margin-bottom: 1rem;">Video Details</h3>
+                </div>
+                """, unsafe_allow_html=True)
+                
                 col1, col2 = st.columns([2, 1])
                 with col1:
                     st.markdown(f"### {video_info['title']}")
                     st.write(video_info.get('description', 'No description available'))
                 with col2:
                     st.image(video_info['thumbnail_url'], use_container_width=True)
-                
-                # Analyze button
-                if st.button("Analyze Video"):
-                    if not st.session_state.authenticated:
-                        st.warning("Please log in to analyze videos")
-                        st.session_state.show_auth = True
-                        return
-                    
-                    with st.spinner("Analyzing video..."):
-                        try:
-                            # Reset chat state for new analysis
-                            st.session_state.chat_enabled = False
-                            st.session_state.chat_messages = []
-                            st.session_state.chat_details = None
-                            
-                            # Store the analysis start time
-                            st.session_state.analysis_start_time = datetime.now()
-                            
-                            # Create progress placeholder
-                            progress_placeholder = st.empty()
-                            status_placeholder = st.empty()
-                            
-                            # Initialize progress bar
-                            progress_bar = progress_placeholder.progress(0)
-                            status_placeholder.info("Fetching video transcript...")
-                            
-                            # Define progress callback
-                            def update_progress(value):
-                                progress_bar.progress(value)
-                            
-                            # Define status callback
-                            def update_status(message):
-                                status_placeholder.info(message)
-                            
-                            # Get transcript
-                            use_cache = st.session_state.settings.get("use_cache", True)
-                            logger.info(f"Use cache setting from session state: {use_cache}")
-                            
-                            progress_placeholder.progress(25)
-                            status_placeholder.info("Fetching video transcript...")
-                            
-                            # Process transcript asynchronously
-                            try:
-                                timestamped_transcript, transcript_list, error = process_transcript_async(url)
-                                
-                                if error:
-                                    logger.error(f"Transcript processing error: {error}")
-                                    st.error(f"Error processing transcript: {error}")
-                                    return
-                                
-                                if not timestamped_transcript:
-                                    logger.error(f"No transcript available for video: {url}")
-                                    st.error("Could not fetch video transcript. The video may not have captions available.")
-                                    return
-                                
-                                # Store transcript in session state
-                                st.session_state.timestamped_transcript = timestamped_transcript
-                                st.session_state.transcript_list = transcript_list
-                                
-                                # Convert transcript list to plain text for analysis
-                                plain_transcript = convert_transcript_list_to_text(transcript_list)
-                                if not plain_transcript:
-                                    logger.error("Failed to convert transcript list to text")
-                                    st.error("Failed to process transcript format")
-                                    return
-                                
-                                logger.info(f"Successfully retrieved transcript for video: {url}")
-                            except Exception as transcript_error:
-                                logger.exception(f"Exception during transcript processing: {str(transcript_error)}")
-                                st.error(f"Failed to process transcript: {str(transcript_error)}")
-                                return
-                            
-                            # Update progress
-                            progress_placeholder.progress(50)
-                            status_placeholder.info("Analyzing transcript...")
-                            
-                            # Run the analysis
-                            try:
-                                # Set environment variables for the LLM model and temperature
-                                os.environ["LLM_MODEL"] = st.session_state.settings.get("model", "gpt-4o-mini")
-                                os.environ["LLM_TEMPERATURE"] = str(st.session_state.settings.get("temperature", 0.7))
-                                
-                                logger.debug(f"Running analysis with use_cache={use_cache}")
-                                results, error = run_analysis(
-                                    url, 
-                                    progress_callback=update_progress,
-                                    status_callback=update_status,
-                                    use_cache=use_cache
-                                )
-                                
-                                # If there's an error, try to run with our processed transcript
-                                if error and "dict' object has no attribute 'text'" in error:
-                                    logger.info("Attempting to run analysis with pre-processed transcript")
-                                    
-                                    # Update status
-                                    update_status("Running analysis with processed transcript...")
-                                    
-                                    # Run direct analysis with the processed transcript
-                                    direct_results, direct_error = run_direct_analysis(
-                                        url,
-                                        plain_transcript,
-                                        progress_callback=update_progress,
-                                        status_callback=update_status
-                                    )
-                                    
-                                    if direct_error:
-                                        logger.error(f"Direct analysis error: {direct_error}")
-                                        # If direct analysis fails, use placeholder messages as a last resort
-                                        video_info = get_video_info(url)
-                                        video_id = extract_video_id(url)
-                                        
-                                        results = {
-                                            "video_id": video_id,
-                                            "url": url,
-                                            "title": video_info.get('title', f"YouTube Video ({video_id})") if video_info else f"YouTube Video ({video_id})",
-                                            "description": video_info.get('description', '') if video_info else '',
-                                            "category": "Uncategorized",
-                                            "transcript": plain_transcript,
-                                            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                                            "chat_details": None,
-                                            "task_outputs": {
-                                                "summarize_content": "This video transcript has been processed, but detailed analysis is not available due to an error. You can chat with the video content to learn more.",
-                                                "analyze_content": "Analysis not available due to an error. Please use the chat interface to ask specific questions about the video content.",
-                                                "create_action_plan": "Action plan not available due to an error. Please use the chat interface to ask specific questions about the video content.",
-                                                "write_report": "Full report not available due to an error. Please use the chat interface to ask specific questions about the video content."
-                                            },
-                                            "token_usage": {
-                                                "prompt_tokens": 0,
-                                                "completion_tokens": 0,
-                                                "total_tokens": 0
-                                            }
-                                        }
-                                    else:
-                                        # Use the results from direct analysis
-                                        results = direct_results
-                                    
-                                    # Get video info for the chat setup
-                                    video_info = get_video_info(url)
-                                    video_id = extract_video_id(url)
-                                    
-                                    # Create chat details using the setup_chat_for_video function
-                                    try:
-                                        # Check if OpenAI API key is available
-                                        openai_api_key = os.environ.get("OPENAI_API_KEY")
-                                        if not openai_api_key:
-                                            logger.error("OpenAI API key is not available")
-                                            results["chat_details"] = {
-                                                "video_id": video_id,
-                                                "youtube_url": url,
-                                                "title": video_info.get('title', f"YouTube Video ({video_id})") if video_info else f"YouTube Video ({video_id})",
-                                                "description": video_info.get('description', '') if video_info else '',
-                                                "agent": None,
-                                                "thread_id": f"thread_{video_id}_{int(time.time())}",
-                                                "has_timestamps": True,
-                                                "error": "OpenAI API key is not available"
-                                            }
-                                        else:
-                                            from src.youtube_analysis.chat import setup_chat_for_video
-                                            chat_details = setup_chat_for_video(url, plain_transcript, transcript_list)
-                                            if chat_details:
-                                                results["chat_details"] = chat_details
-                                                logger.info("Successfully created chat details with agent in fallback mechanism")
-                                            else:
-                                                logger.error("Failed to create chat details in fallback mechanism")
-                                    except Exception as chat_error:
-                                        logger.exception(f"Error creating chat details in fallback mechanism: {str(chat_error)}")
-                                    
-                                    error = None
-                                
-                                if error:
-                                    logger.error(f"Analysis error: {error}")
-                                    st.error(f"Error analyzing video: {error}")
-                                    return
-                                
-                                if not results:
-                                    logger.error("Analysis failed to produce results")
-                                    st.error("Analysis failed to produce results.")
-                                    return
-                                
-                                # Store results in session state
-                                st.session_state.analysis_results = results
-                                st.session_state.analysis_complete = True
-                                st.session_state.video_id = results["video_id"]
-                                
-                                # Setup chat if available
-                                if "chat_details" in results and results["chat_details"] is not None:
-                                    st.session_state.chat_details = results["chat_details"]
-                                    st.session_state.chat_enabled = True
-                                    
-                                    # Add welcome message
-                                    has_timestamps = results["chat_details"].get("has_timestamps", False)
-                                    video_title = results["chat_details"].get("title", "this YouTube video")
-                                    
-                                    welcome_message = f"Hello! I'm your AI assistant for the video \"{video_title}\". Ask me any questions about the content, and I'll do my best to answer based on the transcript."
-                                    if has_timestamps:
-                                        welcome_message += " I'll include timestamps [MM:SS] in my answers to help you locate information in the video."
-                                    
-                                    # Initialize a new chat with welcome message
-                                    st.session_state.chat_messages = [
-                                        {
-                                            "role": "assistant", 
-                                            "content": welcome_message
-                                        }
-                                    ]
-                                
-                                # Clear progress
-                                progress_placeholder.progress(100)
-                                time.sleep(0.5)
-                                progress_placeholder.empty()
-                                status_placeholder.empty()
-                                
-                                # Show success message
-                                st.success("Analysis complete!")
-                                logger.info(f"Analysis completed successfully for video: {url}")
-                                
-                                # Force a rerun to update the UI
-                                st.rerun()
-                            except Exception as analysis_error:
-                                logger.exception(f"Exception during analysis: {str(analysis_error)}")
-                                st.error(f"Analysis failed: {str(analysis_error)}")
-                                return
-                                
-                        except Exception as e:
-                            logger.exception(f"General error processing video: {str(e)}")
-                            st.error(f"An error occurred: {str(e)}")
-                            return
             
             except Exception as e:
                 logger.exception(f"Error fetching video info: {str(e)}")
@@ -1911,50 +2734,173 @@ def main():
         
         # Display features and how it works sections
         if not url:
-            # Display features in cards
-            st.subheader("Features")
-            
-            # Feature cards with improved styling - using columns instead of CSS grid
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.markdown("### 🔎 Video Classification")
-                st.write("Automatically categorize videos into topics like Technology, Business, Education, and more.")
-            
-            with col2:
-                st.markdown("### 📋 Comprehensive Summary")
-                st.write("Get a TL;DR and key points to quickly understand the video's content without watching it entirely.")
-            
-            with col3:
-                st.markdown("### 💬 Chat Interface")
-                st.write("Ask questions about the video content and get answers based on the transcript in real-time.")
-            
-            # How it works section
-            st.subheader("How It Works")
+            # How it works section with improved styling
+            st.markdown("""
+            <h2 style="color: #4dabf7; margin: 3rem 0 1.5rem 0; text-align: center;">How It Works</h2>
+            <div style="width: 100px; height: 3px; background: #4dabf7; margin: 0 auto 2rem auto; border-radius: 2px; opacity: 0.5;"></div>
+            """, unsafe_allow_html=True)
             
             # Steps with improved styling - using columns instead of CSS grid
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
-                st.markdown("### Step 1")
-                st.write("Paste any YouTube URL in the input field above.")
+                st.markdown("""
+                <div class="step-card">
+                    <div style="width: 50px; height: 50px; border-radius: 50%; background: rgba(77, 171, 247, 0.1); display: flex; align-items: center; justify-content: center; margin: 0 auto 1rem auto; border: 1px solid rgba(77, 171, 247, 0.3);">
+                        <span style="font-size: 1.5rem;">1</span>
+                    </div>
+                    <h3 style="text-align: center;">Paste URL</h3>
+                    <p>Paste any YouTube URL in the input field above and click "Analyze Video".</p>
+                </div>
+                """, unsafe_allow_html=True)
             
             with col2:
-                st.markdown("### Step 2")
-                st.write("Our AI extracts and processes the video transcript.")
+                st.markdown("""
+                <div class="step-card">
+                    <div style="width: 50px; height: 50px; border-radius: 50%; background: rgba(77, 171, 247, 0.1); display: flex; align-items: center; justify-content: center; margin: 0 auto 1rem auto; border: 1px solid rgba(77, 171, 247, 0.3);">
+                        <span style="font-size: 1.5rem;">2</span>
+                    </div>
+                    <h3 style="text-align: center;">Extract</h3>
+                    <p>Our AI extracts and processes the video transcript with advanced NLP techniques.</p>
+                </div>
+                """, unsafe_allow_html=True)
             
             with col3:
-                st.markdown("### Step 3")
-                st.write("Multiple specialized AI agents analyze the content.")
+                st.markdown("""
+                <div class="step-card">
+                    <div style="width: 50px; height: 50px; border-radius: 50%; background: rgba(77, 171, 247, 0.1); display: flex; align-items: center; justify-content: center; margin: 0 auto 1rem auto; border: 1px solid rgba(77, 171, 247, 0.3);">
+                        <span style="font-size: 1.5rem;">3</span>
+                    </div>
+                    <h3 style="text-align: center;">Analyze</h3>
+                    <p>Multiple specialized AI agents analyze the content for insights and key information.</p>
+                </div>
+                """, unsafe_allow_html=True)
             
             with col4:
-                st.markdown("### Step 4")
-                st.write("Chat with the video and explore the insights and summary.")
+                st.markdown("""
+                <div class="step-card">
+                    <div style="width: 50px; height: 50px; border-radius: 50%; background: rgba(77, 171, 247, 0.1); display: flex; align-items: center; justify-content: center; margin: 0 auto 1rem auto; border: 1px solid rgba(77, 171, 247, 0.3);">
+                        <span style="font-size: 1.5rem;">4</span>
+                    </div>
+                    <h3 style="text-align: center;">Discover</h3>
+                    <p>Explore the analysis, chat with the video content, and discover valuable insights!</p>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # Features section with improved styling
+            st.markdown("""
+            <h2 style="color: #4dabf7; margin: 3rem 0 1.5rem 0; text-align: center;">Key Features</h2>
+            <div style="width: 100px; height: 3px; background: #4dabf7; margin: 0 auto 2rem auto; border-radius: 2px; opacity: 0.5;"></div>
+            """, unsafe_allow_html=True)
+            
+            # Feature cards with improved styling - using columns instead of CSS grid
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.markdown("""
+                <div class="feature-card">
+                    <div style="font-size: 2.5rem; margin-bottom: 1rem; text-align: center;">🔎</div>
+                    <h3 style="text-align: center;">Smart Video Analysis</h3>
+                    <p>Our AI automatically categorizes videos and extracts key topics, themes, and insights with remarkable accuracy.</p>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col2:
+                st.markdown("""
+                <div class="feature-card">
+                    <div style="font-size: 2.5rem; margin-bottom: 1rem; text-align: center;">📋</div>
+                    <h3 style="text-align: center;">Comprehensive Summary</h3>
+                    <p>Get concise TL;DR summaries and key points to quickly understand any video without watching the entire content.</p>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col3:
+                st.markdown("""
+                <div class="feature-card">
+                    <div style="font-size: 2.5rem; margin-bottom: 1rem; text-align: center;">💬</div>
+                    <h3 style="text-align: center;">Interactive AI Chat</h3>
+                    <p>Ask questions about the video content and get instant, accurate answers based on the transcript in real-time.</p>
+                </div>
+                """, unsafe_allow_html=True)
+                
+            # Use cases section with improved styling
+            st.markdown("""
+            <h2 style="color: #4dabf7; margin: 3rem 0 1.5rem 0; text-align: center;">Perfect For</h2>
+            <div style="width: 100px; height: 3px; background: #4dabf7; margin: 0 auto 2rem auto; border-radius: 2px; opacity: 0.5;"></div>
+            """, unsafe_allow_html=True)
+            
+            use_case_cols = st.columns(3)
+            
+            with use_case_cols[0]:
+                st.markdown("""
+                <div class="feature-card">
+                    <div style="font-size: 2.5rem; margin-bottom: 1rem; text-align: center;">🎓</div>
+                    <h3 style="text-align: center;">Students & Researchers</h3>
+                    <p>Quickly extract key information from educational videos, lectures, and research presentations.</p>
+                </div>
+                """, unsafe_allow_html=True)
+                
+            with use_case_cols[1]:
+                st.markdown("""
+                <div class="feature-card">
+                    <div style="font-size: 2.5rem; margin-bottom: 1rem; text-align: center;">💼</div>
+                    <h3 style="text-align: center;">Professionals</h3>
+                    <p>Stay updated with industry trends by efficiently processing webinars, conferences, and thought leadership videos.</p>
+                </div>
+                """, unsafe_allow_html=True)
+                
+            with use_case_cols[2]:
+                st.markdown("""
+                <div class="feature-card">
+                    <div style="font-size: 2.5rem; margin-bottom: 1rem; text-align: center;">🧠</div>
+                    <h3 style="text-align: center;">Lifelong Learners</h3>
+                    <p>Maximize learning from tutorials, courses, and educational content with AI-powered summaries and insights.</p>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # Call to action section
+            st.markdown("""
+            <div style="background: linear-gradient(45deg, #1a1a1a, #232323); padding: 3rem 2rem; border-radius: 12px; text-align: center; margin-top: 3rem; position: relative; overflow: hidden;">
+                <div style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: radial-gradient(circle at 70% 30%, rgba(77, 171, 247, 0.1), transparent 70%); z-index: 1;"></div>
+                <div style="position: relative; z-index: 2;">
+                    <h2 style="color: #ffffff; margin-bottom: 1rem;">Ready to Try VideoGenius AI?</h2>
+                    <p style="color: #e0e0e0; margin-bottom: 2rem; font-size: 1.1rem;">Paste a YouTube URL above and discover insights in seconds!</p>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
     
     # Check if analysis is complete (retained from session state)
     if st.session_state.analysis_complete and st.session_state.analysis_results:
-        # Display results from session state
-        display_analysis_results(st.session_state.analysis_results)
+        # Verify the analysis results have the required fields
+        results = st.session_state.analysis_results
+        logger.info(f"Found analysis results in session state with keys: {list(results.keys()) if isinstance(results, dict) else 'not a dict'}")
+        
+        if isinstance(results, dict) and "task_outputs" in results and results["task_outputs"]:
+            # Log the tasks that are available
+            logger.info(f"Displaying analysis results with tasks: {list(results['task_outputs'].keys())}")
+            # Display results from session state
+            display_analysis_results(results)
+        else:
+            logger.error(f"Invalid analysis results structure: {type(results)}")
+            st.error("Analysis results are not in the expected format. Please try again.")
+            
+            # Attempt to fix the results if possible
+            if isinstance(results, dict) and "video_id" in results:
+                logger.info("Attempting to create fallback task outputs")
+                # Create minimal task outputs to display something
+                results["task_outputs"] = {
+                    "summarize_content": "Analysis results were not properly generated. Please try again with a different model or settings.",
+                    "analyze_content": "Unable to generate detailed analysis. Please try with cache disabled.",
+                    "create_action_plan": "Action plan could not be created. Please try again.",
+                    "write_report": "Report generation failed."
+                }
+                
+                # Make sure context_tag is set
+                if "context_tag" not in results:
+                    results["context_tag"] = "General"
+                    
+                logger.info("Displaying fallback analysis results")
+                display_analysis_results(results)
 
 if __name__ == "__main__":
     main() 

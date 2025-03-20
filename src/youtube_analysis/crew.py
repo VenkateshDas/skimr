@@ -151,12 +151,59 @@ class YouTubeAnalysisCrew:
         logger.info("Creating YouTube Analysis Crew")
         try:         
             logger.info("Creating crew with all agents and tasks")
-            return Crew(
+            logger.info(f"Available tasks: {[t.__name__ if hasattr(t, '__name__') else str(t) for t in self.tasks]}")
+            
+            # Create tasks with explicit debugging
+            tasks = []
+            task_methods = [
+                self.classify_video, 
+                self.summarize_content, 
+                self.analyze_content, 
+                self.create_action_plan, 
+                self.write_report
+            ]
+            
+            logger.info(f"Creating {len(task_methods)} tasks")
+            
+            # Enhanced error handling for task creation
+            task_creation_errors = []
+            for task_method in task_methods:
+                try:
+                    logger.info(f"Creating task from method: {task_method.__name__}")
+                    task = task_method()
+                    if task:
+                        logger.info(f"Successfully created task: {task.name}")
+                        tasks.append(task)
+                    else:
+                        error_msg = f"Task {task_method.__name__} returned None"
+                        logger.error(error_msg)
+                        task_creation_errors.append(error_msg)
+                except Exception as task_error:
+                    error_msg = f"Error creating task {task_method.__name__}: {str(task_error)}"
+                    logger.error(error_msg, exc_info=True)
+                    task_creation_errors.append(error_msg)
+            
+            logger.info(f"Created {len(tasks)} tasks for the crew")
+            
+            if len(tasks) == 0:
+                error_msg = "No tasks were created successfully. Check task creation errors."
+                logger.error(error_msg)
+                if task_creation_errors:
+                    logger.error(f"Task creation errors: {'; '.join(task_creation_errors)}")
+                raise RuntimeError(error_msg)
+            
+            # Create the crew with explicit configuration
+            logger.info("Creating Crew instance with the successfully created tasks")
+            crew = Crew(
                 agents=self.agents,
-                tasks=self.tasks,
+                tasks=tasks,
                 process=Process.sequential,
                 verbose=True,
             )
+            
+            logger.info(f"Successfully created crew with {len(crew.tasks)} tasks")
+            return crew
+            
         except Exception as e:
             logger.error(f"Error creating crew: {str(e)}", exc_info=True)
             raise 
