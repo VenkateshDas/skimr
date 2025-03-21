@@ -15,12 +15,21 @@ classify_video:
     - Finance
     - Personal Development
     
+    Additionally, identify the most appropriate context tag for this video:
+    - Tutorial
+    - News
+    - Review
+    - Case Study
+    - Interview
+    - Opinion Piece
+    - How-To Guide
+    
     Provide a brief explanation for your classification choice, highlighting key terms or themes
     from the transcript that support your decision. If the video spans multiple categories,
     choose the most dominant one and mention the secondary categories in your explanation.
 
   expected_output: >
-    A clear classification of the video into one of the specified categories, along with
+    A clear classification of the video into one of the specified categories and context tags, along with
     a brief explanation justifying the classification based on the transcript content.
 
 summarize_content:
@@ -28,13 +37,21 @@ summarize_content:
     Here is the YouTube video transcription:
     {transcript}
 
-    Create a concise executive summary of the YouTube video transcript, including:
+    Create an adaptive, layered summary of the YouTube video transcript, including:
 
-    - TL;DR: Briefly summarize the video's core message in 3-4 clear sentences.
-    - Key Points: Provide a bullet-point list (max 5 points) of the most critical takeaways.
+    1. Basic TL;DR Layer: Briefly summarize the video's core message in 3-4 clear sentences.
+    
+    2. Deep Dive Layer: Provide a more comprehensive summary (8-10 sentences) that includes nuanced 
+       details, context, and secondary points important for deeper understanding.
+    
+    3. Key Points: Provide a bullet-point list (max 5 points) of the most critical takeaways.
+    
+    Adapt your summary style based on the context tag identified in the classification (tutorial, news, 
+    review, etc.) to make the information more relevant to how the content is presented.
 
   expected_output: >
-    Concise, structured executive summary featuring a succinct TL;DR and essential key points.
+    Multi-layered, context-aware summary featuring both a succinct TL;DR, a comprehensive deep dive option,
+    and essential key points, styled appropriately for the video's context tag.
 
 analyze_content:
   description: >
@@ -47,11 +64,19 @@ analyze_content:
     - Intended audience and relevance
     - Unique points or value propositions
     - Significant technical or practical details
+    
+    Additionally, analyze the emotional tone of the content:
+    - Identify whether the speaker's approach is primarily informative, persuasive, or biased
+    - Note any emotional undertones (enthusiasm, urgency, caution, etc.)
+    - Assess the overall presentation style (formal, conversational, technical, etc.)
+
+    Do not include the complete transcript in the output.
 
     Include brief, relevant quotes or examples for clarity.
 
   expected_output: >
-    Clear, broadly applicable notes suitable for efficient study and quick comprehension.
+    Clear, broadly applicable notes suitable for efficient study and quick comprehension, 
+    including emotional tone analysis that helps users understand the presenter's approach.
 
 create_action_plan:
   description: >
@@ -66,31 +91,147 @@ create_action_plan:
     - Clearly defined anticipated outcomes
     - Potential challenges accompanied by simple solutions
 
+    Tailor your recommendations based on the emotional tone and context tag identified in previous tasks,
+    ensuring the action plan aligns with how the information was presented (tutorial-style steps for tutorials,
+    analytical responses for news content, etc.).
+
     Each recommendation should be direct, practical, and easy to implement immediately.
 
   expected_output: >
-    Direct, actionable advisor notes clearly outlining recommendations, resources, outcomes, and succinct solutions to potential challenges.
+    Direct, actionable advisor notes clearly outlining recommendations, resources, outcomes, and succinct solutions
+    to potential challenges, contextualized based on the content's tone and format.
 
 write_report:
   description: >
     Here is the YouTube video transcription:
     {transcript}
 
-    Use the classification from the Classify Video task.
-    Use the summary from the Summarize Content task.
-    Use the analysis from the Analyze Content task.
-    Use the action plan from the Create Action Plan task.
+    Use the classification and context tag from the Classify Video task.
+    Use the layered summary from the Summarize Content task.
+    Use the analysis and emotional tone assessment from the Analyze Content task.
+    Use the context-aware action plan from the Create Action Plan task.
     
     Prepare a succinct, high-quality Markdown report (maximum 750 words) clearly summarizing:
 
-    - Classification
-    - Crisp TL;DR
+    - Classification and Context Tag
+    - Basic TL;DR (for quick scanning)
+    - Deep Dive Summary
     - Key Points
-    - Concise Analysis Notes
+    - Concise Analysis Notes with Emotional Tone Assessment
     - Direct Advisor Recommendations and Action Plan
-    - Potential Challenges and Simple Solutions
+    - Potential Challenges and Solutions
+    - Current Trends and Insights
+    - Key Quotes
+    - Further Reading and Resources
 
+    For getting the current trends and insights, further reading and resources, use the Search tool
+
+    You must provide a suitable title for the report. It must not be like "Markdown Report" or "YouTube Analysis Report".
     Prioritize clarity, readability, and brevity, eliminating redundancy to create superior quality, highly effective notes.
+    
+    Structure the report to allow users to quickly scan the basic information while having the option to expand sections
+    for deeper insights when needed.
 
   expected_output: >
-    A structured Markdown report crafted as concise, top-tier notes optimized for immediate understanding and practical application.
+    A structured, contextually-layered Markdown report crafted with both basic and detailed information layers,
+    optimized for immediate understanding with options for deeper exploration based on user needs.
+
+write_blog_post:
+  description: >
+    Using the information from the report and transcript, create a comprehensive blog post about the YouTube video.
+    
+    Here is the YouTube video transcription:
+    {transcript}
+    
+    Use the report of the youtube video analysis from the Write Report task.
+    
+    Create an engaging, well-structured blog post that:
+    
+    - Has an attention-grabbing headline and introduction
+    - Provides comprehensive coverage of the video's content
+    - Includes relevant subheadings for easy navigation
+    - Elaborates on key points with additional context and examples
+    - Incorporates relevant quotes from the video when appropriate
+    - Concludes with a summary and possible call-to-action
+    - Uses a tone appropriate for the content category (educational, technical, business, etc.)
+    - Make sure to provide a personal perspective section where you share your own thoughts and opinions about the topic.
+    - Make sure to include the source YouTube video link in the blog post.
+    - At the end provide further reading and resources section where you provide relevant links to the topic.
+
+    Also make sure to include extra information that are interesting to this topic from the internet.
+    Ask clever questions while using the Search tool to get the latest information about the topic.
+    
+    Aim for a 1000-1500 word blog post that would engage readers and provide value even for those who haven't watched the video.
+    Format the blog post properly with Markdown for easy reading.
+
+  expected_output: >
+    A comprehensive, well-structured blog post in Markdown format that thoroughly explains the video content
+    in an engaging way, with proper formatting, subheadings, and appropriate tone for the content category.It must 
+    provide more value to the reader than just the video content.
+
+write_linkedin_post:
+  description: >
+    Using the information from the report and transcript, create a professional LinkedIn post about the YouTube video.
+    
+    Here is the YouTube video transcription:
+    {transcript}
+    
+    Use the report of the youtube video analysis from the Write Report task.
+
+    The linkedin post should have a creative hook in the first sentence.
+    The post must breakdown the technical content into easy to understand points and
+    then provide key takeaways in a concise manner.
+    
+    Create a compelling LinkedIn post that:
+    
+    - It must not look anything like a AI generated post. It must feel like a human wrote it.
+    - Opens with a creative professional hook to capture attention
+    - The content must provide absolute and useful value to the reader without being too promotional or salesy. 
+    - Write it from a curious professional perspective looking at the pros and cons of the topic.
+    - Uses a conversational yet professional tone
+    - You must provide a personal perspective dissecting the topic in a interesting way that will make the reader curious.
+    - Includes relevant hashtags (5-7) based on the content category
+    - Encourages engagement (comments, sharing perspectives)
+    - Ends with a clear call-to-action and the source YouTube video link  
+    - Stays within LinkedIn's optimal length (1300-1600 characters)
+    
+    The post should provide value to professionals in relevant fields while encouraging them to watch the full video.
+
+  expected_output: >
+    A concise, professional LinkedIn post that effectively summarizes key insights from the video,
+    includes appropriate hashtags, encourages engagement, and provides the original YouTube video source link.
+    It must not look anything like a AI generated post. It must feel like a human wrote it.
+
+write_tweet:
+  description: >
+    Using the information from the report and transcript, create an engaging tweet about the YouTube video.
+    
+    Use the report of the youtube video analysis from the Write Report task.
+    
+    Use the classification and context tag from the Classify Video task.
+    
+    Create a compelling tweet that:
+    
+    - Provide a hook in the first sentence that is attention grabbing with a statement/question that is not obvious. 
+    - Captures the essence of the video in under 280 characters
+    - Uses a writing style similar to popular influencers in the video's category
+    - Includes 1-2 relevant hashtags
+    - Has an engaging hook or question
+    - Encourages clicks to the video
+    - Maintains the core message while being conversational
+    
+    For different categories, emulate these influencer styles:
+    - Technology: Similar to @lexfridman or @naval
+    - Business: Similar to @garyvee or @simonsinek
+    - Education: Similar to @mrdustinklee or @edutopia
+    - Health & Wellness: Similar to @drmarkhumanmd or @mindvalley
+    - Science: Similar to @neiltyson or @scifri
+    - Finance: Similar to @ramit or @theramoneycoach
+    - Personal Development: Similar to @jamesclear or @brenebrown
+    
+    The tweet should make users want to learn more while giving them a taste of the video's value.
+    It must not look anything like a AI generated post. It must feel like a human wrote it.
+
+  expected_output: >
+    An engaging, concise tweet in the style of relevant category influencers that captures the
+    essence of the video content, includes appropriate hashtags, and encourages viewers to watch the full video.

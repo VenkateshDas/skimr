@@ -9,7 +9,8 @@ from .youtube_utils import (
     get_cache_dir,
     get_cache_key,
     get_cached_transcription,
-    cache_transcription
+    cache_transcription,
+    clean_markdown_fences
 )
 
 __all__ = [
@@ -20,5 +21,6 @@ __all__ = [
     'get_cache_dir',
     'get_cache_key',
     'get_cached_transcription',
-    'cache_transcription'
+    'cache_transcription',
+    'clean_markdown_fences'
 ]

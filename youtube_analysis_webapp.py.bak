@@ -5,7 +5,6 @@ import re
 import time
 import json
 import logging
-import io  # Add explicit import for io module
 from typing import Optional, Dict, Any, Tuple, List, Sequence, TypedDict, Annotated, Callable, Generator, Union
 import pandas as pd
 from datetime import datetime
@@ -14,15 +13,6 @@ import html
 import uuid
 import concurrent.futures
 import threading
-import markdown
-import base64
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, ListItem, ListFlowable
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_LEFT
-from reportlab.lib import colors
-from html.parser import HTMLParser
-from html import unescape
 
 # Add the src directory to the path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '.')))
@@ -31,15 +21,25 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '.'))
 from src.youtube_analysis.config import APP_VERSION, validate_config, setup_logging
 
 # Import the YouTube Analysis modules
-from src.youtube_analysis import run_analysis
+from src.youtube_analysis import (
+    run_analysis, 
+    run_direct_analysis,
+    extract_category,
+    setup_chat_for_video,
+    get_transcript_with_timestamps,
+    get_category_class,
+    extract_youtube_thumbnail,
+    get_cached_analysis,
+    cache_analysis,
+    clear_analysis_cache
+)
 from src.youtube_analysis.utils.youtube_utils import (
     get_transcript, 
     extract_video_id, 
     get_video_info, 
     validate_youtube_url,
     get_cached_transcription,
-    cache_transcription,
-    clean_markdown_fences
+    cache_transcription
 )
 from src.youtube_analysis.utils.logging import get_logger
 from src.youtube_analysis.auth import init_auth_state, display_auth_ui, get_current_user, logout, require_auth
@@ -193,7 +193,7 @@ def process_transcript_async(url: str, use_cache: bool = True) -> Tuple[Optional
         try:
             # Use the YouTubeTranscriptApi directly to avoid issues with get_transcript function
             from youtube_transcript_api import YouTubeTranscriptApi
-            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'es', 'fr', 'de', 'it', 'ja', 'ko', 'pt', 'ru', 'zh', 'ta'])
+            transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
             
             if not transcript_list:
                 logger.error(f"No transcript available for video ID: {video_id}")
@@ -1455,7 +1455,6 @@ def handle_chat_input():
             response = agent.invoke(
                 {"messages": messages},
                 config={"configurable": {"thread_id": thread_id}},
-                
             )
             
             # Extract the final answer
@@ -1691,415 +1690,228 @@ def display_analysis_results(results: Dict[str, Any]):
     
     with analysis_container:
         # Analysis tabs with Full Report as the first tab
-        tabs = st.tabs(["📄 Full Report", "✨ Summary", "🔍 Analysis", "📝 Action Plan", "📝 Blog Post", "💼 LinkedIn Post", "🐦 X Tweet", "🎙️ Transcript"])
+        tabs = st.tabs(["📄 Full Report", "✨ Summary", "🔍 Analysis", "📝 Action Plan", "🎙️ Transcript"])
         
         task_outputs = results.get("task_outputs", {})
-        
-        # Add export options at the top
-        export_col1, export_col2 = st.columns([3, 1])
-        with export_col2:
-            if st.button("Export Analysis as PDF", type="primary"):
-                st.info("Generating PDF... This will download when ready.")
-                
-                # Get video title for the filename
-                video_title = results.get("title", "youtube_video")
-                # Create a safe filename by removing invalid characters
-                safe_title = re.sub(r'[\\/*?:"<>|]', "", video_title)
-                safe_title = safe_title.replace(' ', '_')
-                pdf_filename = f"{safe_title}_youtube_analysis.pdf"
-                
-                logger.info(f"Starting PDF export for video: {video_title}")
-                logger.info(f"PDF filename will be: {pdf_filename}")
-                
-                # Collect all content
-                pdf_content = ""
-                if "write_report" in task_outputs:
-                    pdf_content += task_outputs["write_report"] + "\n\n"
-                if "summarize_content" in task_outputs:
-                    pdf_content += "# Summary\n\n" + task_outputs["summarize_content"] + "\n\n"
-                if "analyze_content" in task_outputs:
-                    pdf_content += "# Analysis\n\n" + task_outputs["analyze_content"] + "\n\n"
-                if "create_action_plan" in task_outputs:
-                    pdf_content += "# Action Plan\n\n" + task_outputs["create_action_plan"] + "\n\n"
-                if "write_blog_post" in task_outputs:
-                    pdf_content += "# Blog Post\n\n" + task_outputs["write_blog_post"] + "\n\n"
-                
-                logger.info(f"Collected content for PDF, total length: {len(pdf_content)} characters")
-                
-                # Convert markdown to PDF using reportlab
-                try:
-                    # First convert markdown to HTML for better parsing
-                    logger.info("Converting markdown to HTML")
-                    html_content = markdown.markdown(pdf_content, extensions=['extra'])
-                    logger.info(f"HTML conversion complete, length: {len(html_content)} characters")
-                    
-                    # Custom HTML parser to convert HTML to ReportLab flowables
-                    class HTMLtoReportLabParser(HTMLParser):
-                        def __init__(self):
-                            super().__init__()
-                            self.styles = getSampleStyleSheet()
-                            self.flowables = []
-                            self.list_items = []
-                            self.in_list = False
-                            self.in_bold = False
-                            self.in_italic = False
-                            self.in_paragraph = False
-                            
-                            # Create custom styles
-                            self.styles.add(ParagraphStyle(
-                                name='CustomBody',
-                                parent=self.styles['Normal'],
-                                spaceBefore=6,
-                                spaceAfter=6
-                            ))
-                            
-                            self.styles.add(ParagraphStyle(
-                                name='CustomH1',
-                                parent=self.styles['Heading1'],
-                                fontSize=16,
-                                spaceBefore=12,
-                                spaceAfter=6,
-                                textColor=colors.darkblue
-                            ))
-                            
-                            self.styles.add(ParagraphStyle(
-                                name='CustomH2',
-                                parent=self.styles['Heading2'],
-                                fontSize=14,
-                                spaceBefore=10,
-                                spaceAfter=6,
-                                textColor=colors.darkblue
-                            ))
-                            
-                            self.styles.add(ParagraphStyle(
-                                name='CustomH3',
-                                parent=self.styles['Heading3'],
-                                fontSize=12,
-                                spaceBefore=8,
-                                spaceAfter=4,
-                                textColor=colors.darkblue
-                            ))
-                            
-                            self.styles.add(ParagraphStyle(
-                                name='CustomListItem',
-                                parent=self.styles['Normal'],
-                                leftIndent=20,
-                                spaceBefore=2,
-                                spaceAfter=2
-                            ))
-                            
-                            self.current_text = ""
-                            
-                        def handle_starttag(self, tag, attrs):
-                            if tag == 'h1':
-                                self.flush_text()
-                                self.current_style = 'CustomH1'
-                            elif tag == 'h2':
-                                self.flush_text()
-                                self.current_style = 'CustomH2'
-                            elif tag == 'h3':
-                                self.flush_text()
-                                self.current_style = 'CustomH3'
-                            elif tag == 'p':
-                                self.flush_text()
-                                self.in_paragraph = True
-                                self.current_style = 'CustomBody'
-                            elif tag == 'strong' or tag == 'b':
-                                self.in_bold = True
-                            elif tag == 'em' or tag == 'i':
-                                self.in_italic = True
-                            elif tag == 'ul' or tag == 'ol':
-                                self.in_list = True
-                                self.list_items = []
-                            elif tag == 'li' and self.in_list:
-                                self.flush_text()
-                                self.current_style = 'CustomListItem'
-                                
-                        def handle_endtag(self, tag):
-                            if tag in ('h1', 'h2', 'h3', 'p'):
-                                self.flush_text()
-                            elif tag == 'strong' or tag == 'b':
-                                self.in_bold = False
-                            elif tag == 'em' or tag == 'i':
-                                self.in_italic = False
-                            elif tag == 'li':
-                                if self.current_text.strip():
-                                    self.list_items.append(self.current_text.strip())
-                                    self.current_text = ""
-                            elif tag in ('ul', 'ol'):
-                                if self.list_items:
-                                    # Create a list flowable
-                                    bullet_list = []
-                                    for item in self.list_items:
-                                        bullet_list.append(ListItem(
-                                            Paragraph(item, self.styles['CustomListItem']),
-                                            leftIndent=20
-                                        ))
-                                    self.flowables.append(ListFlowable(
-                                        bullet_list,
-                                        bulletType='bullet',
-                                        start=None,
-                                        bulletFontSize=8,
-                                        leftIndent=10,
-                                        spaceBefore=6,
-                                        spaceAfter=6
-                                    ))
-                                    self.list_items = []
-                                    self.in_list = False
-                                    
-                        def handle_data(self, data):
-                            text = data.strip()
-                            if text:
-                                formatted_text = text
-                                if self.in_bold:
-                                    formatted_text = f"<b>{formatted_text}</b>"
-                                if self.in_italic:
-                                    formatted_text = f"<i>{formatted_text}</i>"
-                                self.current_text += formatted_text + " "
-                                
-                        def flush_text(self):
-                            if self.current_text.strip():
-                                if self.in_list:
-                                    self.list_items.append(self.current_text.strip())
-                                else:
-                                    style = getattr(self, 'current_style', 'CustomBody')
-                                    self.flowables.append(Paragraph(self.current_text.strip(), self.styles[style]))
-                                    self.flowables.append(Spacer(1, 2))
-                                self.current_text = ""
-                                
-                        def get_flowables(self):
-                            self.flush_text()
-                            return self.flowables
-                    
-                    # Parse HTML and get flowables
-                    logger.info("Parsing HTML to ReportLab flowables")
-                    parser = HTMLtoReportLabParser()
-                    parser.feed(html_content)
-                    flowables = parser.get_flowables()
-                    logger.info(f"Generated {len(flowables)} flowable elements for PDF")
-                    
-                    # Add title at the beginning
-                    title_style = ParagraphStyle(
-                        name='Title',
-                        parent=getSampleStyleSheet()['Title'],
-                        fontSize=18,
-                        alignment=TA_LEFT,
-                        textColor=colors.darkblue,
-                        spaceBefore=12,
-                        spaceAfter=24
-                    )
-                    title_paragraph = Paragraph(f"YouTube Analysis: {video_title}", title_style)
-                    flowables.insert(0, title_paragraph)
-                    flowables.insert(1, Spacer(1, 12))
-                    
-                    # Create PDF
-                    logger.info("Building PDF document")
-                    buffer = io.BytesIO()
-                    doc = SimpleDocTemplate(buffer, pagesize=letter, title=f"YouTube Analysis - {video_title}")
-                    doc.build(flowables)
-                    pdf_data = buffer.getvalue()
-                    buffer.close()
-                    logger.info(f"PDF generated successfully, size: {len(pdf_data)} bytes")
-                    
-                    # Provide download link
-                    b64 = base64.b64encode(pdf_data).decode()
-                    href = f'<a href="data:application/pdf;base64,{b64}" download="{pdf_filename}">Download PDF</a>'
-                    st.markdown(href, unsafe_allow_html=True)
-                    logger.info("PDF download link created and displayed to user")
-                except Exception as e:
-                    logger.error(f"PDF export failed with error: {str(e)}", exc_info=True)
-                    st.error(f"PDF export failed: {str(e)}")
-                    # Fallback to simple method if above fails
-                    try:
-                        # Simple markdown to PDF conversion as fallback
-                        logger.info("Attempting fallback PDF generation method")
-                        buffer = io.BytesIO()
-                        doc = SimpleDocTemplate(buffer, pagesize=letter)
-                        styles = getSampleStyleSheet()
-                        
-                        flowables = []
-                        flowables.append(Paragraph(f"YouTube Analysis: {video_title}", styles['Title']))
-                        flowables.append(Spacer(1, 12))
-                        
-                        lines_processed = 0
-                        for line in pdf_content.split('\n'):
-                            if not line.strip():
-                                flowables.append(Spacer(1, 6))
-                            elif line.startswith('# '):
-                                flowables.append(Paragraph(line[2:], styles['Heading1']))
-                            elif line.startswith('## '):
-                                flowables.append(Paragraph(line[3:], styles['Heading2']))
-                            elif line.startswith('### '):
-                                flowables.append(Paragraph(line[4:], styles['Heading3']))
-                            elif line.startswith('- '):
-                                flowables.append(Paragraph('• ' + line[2:], styles['Normal']))
-                            else:
-                                flowables.append(Paragraph(line, styles['Normal']))
-                            lines_processed += 1
-                        
-                        logger.info(f"Fallback: processed {lines_processed} lines, creating {len(flowables)} flowables")
-                        doc.build(flowables)
-                        pdf_data = buffer.getvalue()
-                        buffer.close()
-                        logger.info(f"Fallback PDF generated successfully, size: {len(pdf_data)} bytes")
-                        
-                        b64 = base64.b64encode(pdf_data).decode()
-                        href = f'<a href="data:application/pdf;base64,{b64}" download="{pdf_filename}">Download PDF (Simple Format)</a>'
-                        st.markdown(href, unsafe_allow_html=True)
-                        logger.info("Fallback PDF download link created and displayed to user")
-                    except Exception as fallback_error:
-                        logger.error(f"Fallback PDF export also failed: {str(fallback_error)}", exc_info=True)
-                        st.error(f"Fallback PDF export also failed: {str(fallback_error)}")
         
         # Display content in tabs
         with tabs[0]:
             if "write_report" in task_outputs:
-                # Get the report content
-                report_content = task_outputs["write_report"]
+                # Pre-process the report content to enhance formatting
+                report_content = sanitize_html_content(task_outputs["write_report"])
                 
-                # Create an expander for copying the report
-                with st.expander("Copy Full Report"):
-                    st.code(report_content, language="markdown")
+                # Define regex patterns
+                header_pattern = r'(?m)^(#{1,3})\s+(.+)$'
+                bullet_pattern = r'(?m)^- (.+)$'
+                numbered_list_pattern = r'(?m)^([0-9]+)\. (.+)$'
+                list_wrap_pattern = r'(<li [^>]*>.*?</li>(\s*<li [^>]*>.*?</li>)*)'
+                blockquote_pattern = r'(?m)^>\s*(.+)$'
+                # More robust pattern for bold text
+                bold_pattern = r'\*\*(.*?)\*\*'
+                # Pattern for bold section headers with colons
+                bold_section_pattern = r'\*\*(.*?)\*\*\s*:'
+                # Pattern for custom HTML header tags
+                custom_header_pattern = r'<h##\s+style="[^"]*">(.*?)</h##>'
+                # Pattern for malformed header tags from the example
+                malformed_header_pattern = r'<h##\s+style="([^"]*)">([^<]+)</h##>'
                 
-                # Display using Streamlit's native markdown support
-                # if the report content is within fenced code blocks, then remove the top and bottom fences
-                report_content = clean_markdown_fences(report_content)
-                st.markdown(report_content)
+                # First, fix any malformed HTML headers
+                report_content = re.sub(custom_header_pattern, r'<h3 style="color: #4dabf7; margin-top: 1.5rem; margin-bottom: 1rem;">\1</h3>', report_content)
+                report_content = re.sub(malformed_header_pattern, r'<h3 style="\1">\2</h3>', report_content)
+                
+                # Apply standard markdown formatting
+                report_content = re.sub(header_pattern, r'<h3 style="color: #4dabf7; margin-top: 1.5rem; margin-bottom: 1rem;">\2</h3>', report_content)
+                report_content = report_content.replace('<h# ', '<h3 ').replace('</h# ', '</h3 ')
+                report_content = re.sub(bullet_pattern, r'<li style="margin-bottom: 0.8rem;">\1</li>', report_content)
+                report_content = re.sub(numbered_list_pattern, r'<li style="margin-bottom: 0.8rem;">\2</li>', report_content)
+                
+                # Handle bold section headers with colons first (more specific pattern)
+                report_content = re.sub(bold_section_pattern, r'<h4 style="color: #4dabf7; margin-top: 1.5rem; margin-bottom: 0.5rem; font-size: 1.1rem;">\1:</h4>', report_content)
+                
+                # Handle remaining bold text
+                report_content = re.sub(bold_pattern, r'<strong style="color: #4dabf7;">\1</strong>', report_content)
+                
+                # Wrap lists in ul tags if they're not already
+                if '<li ' in report_content and '<ul>' not in report_content:
+                    report_content = re.sub(list_wrap_pattern, r'<ul style="margin-left: 1.5rem; margin-bottom: 1.5rem;">\1</ul>', report_content, flags=re.DOTALL)
+                
+                # Format blockquotes
+                report_content = re.sub(blockquote_pattern, r'<blockquote style="border-left: 3px solid #4dabf7; padding-left: 1rem; margin-left: 0; color: #aaaaaa; font-style: italic;">\1</blockquote>', report_content)
+                
+                st.markdown(f"""
+                <div class="card" style="background: #1E1E1E; border-radius: 8px; padding: 1.5rem; border: 1px solid #333; margin-top: 1rem;">
+                    <div style="color: #e0e0e0; line-height: 1.6; font-size: 1rem;">
+                        {report_content}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
             else:
                 st.info("Full report not available.")
-                
+        
         with tabs[1]:
             if "summarize_content" in task_outputs:
-                # Get the summary content
-                summary_content = task_outputs["summarize_content"]
+                # Pre-process the summary content to enhance formatting
+                summary_content = sanitize_html_content(task_outputs["summarize_content"])
                 
-                # Create an expander for copying the summary
-                with st.expander("Copy Summary"):
-                    st.code(summary_content, language="markdown")
+                # Define regex patterns
+                tl_dr_pattern = r'(\*\*TL;DR:\*\*|\*\*TL;DR\*\*|TL;DR:)'
+                key_points_pattern = r'(Key Points:|Key Takeaways:|Main Points:)'
+                bullet_pattern = r'(?m)^- (.+)$'
+                numbered_list_pattern = r'(?m)^([0-9]+)\. (.+)$'
+                list_wrap_pattern = r'(<li [^>]*>.*?</li>(\s*<li [^>]*>.*?</li>)*)'
+                nested_list_pattern = r'(<li class="nested-item"[^>]*>.*?</li>(\s*<li class="nested-item"[^>]*>.*?</li>)*)'
+                # More robust pattern for bold text
+                bold_pattern = r'\*\*(.*?)\*\*'
+                # Pattern for bold section headers with colons
+                bold_section_pattern = r'\*\*(.*?)\*\*\s*:'
+                # Pattern for custom HTML header tags
+                custom_header_pattern = r'<h##\s+style="[^"]*">(.*?)</h##>'
+                # Pattern for malformed header tags from the example
+                malformed_header_pattern = r'<h##\s+style="([^"]*)">([^<]+)</h##>'
                 
-                # Display using Streamlit's native markdown support
-                st.markdown(summary_content)
+                # Fix malformed HTML headers
+                summary_content = re.sub(custom_header_pattern, r'<h3 style="color: #4dabf7; margin-top: 1.5rem; margin-bottom: 1rem;">\1</h3>', summary_content)
+                summary_content = re.sub(malformed_header_pattern, r'<h3 style="\1">\2</h3>', summary_content)
+                
+                # Apply formatting
+                summary_content = re.sub(tl_dr_pattern, '<h3 style="color: #4dabf7; margin-top: 0.5rem; margin-bottom: 1rem;">TL;DR:</h3>', summary_content)
+                summary_content = re.sub(key_points_pattern, '<h3 style="color: #4dabf7; margin-top: 1.5rem; margin-bottom: 1rem;">Key Points:</h3>', summary_content)
+                summary_content = re.sub(bullet_pattern, r'<li style="margin-bottom: 0.8rem;">\1</li>', summary_content)
+                summary_content = re.sub(numbered_list_pattern, r'<li style="margin-bottom: 0.8rem;">\2</li>', summary_content)
+                
+                # Handle bold section headers with colons first (more specific pattern)
+                summary_content = re.sub(bold_section_pattern, r'<h4 style="color: #4dabf7; margin-top: 1.5rem; margin-bottom: 0.5rem; font-size: 1.1rem;">\1:</h4>', summary_content)
+                
+                # Handle bold text that isn't part of a header
+                summary_content = re.sub(bold_pattern, r'<strong style="color: #4dabf7;">\1</strong>', summary_content)
+                
+                # Handle nested lists first
+                if '<li class="nested-item"' in summary_content:
+                    summary_content = re.sub(nested_list_pattern, r'<ul class="nested-list" style="margin-left: 1.5rem; margin-bottom: 0.5rem;">\1</ul>', summary_content, flags=re.DOTALL)
+                
+                # Wrap lists in ul tags if they're not already
+                if '<li ' in summary_content and '<ul>' not in summary_content:
+                    summary_content = re.sub(list_wrap_pattern, r'<ul style="margin-left: 1.5rem; margin-bottom: 1.5rem;">\1</ul>', summary_content, flags=re.DOTALL)
+                
+                st.markdown(f"""
+                <div class="card" style="background: #1E1E1E; border-radius: 8px; padding: 1.5rem; border: 1px solid #333; margin-top: 1rem;">
+                    <div style="color: #e0e0e0; line-height: 1.6; font-size: 1rem;">
+                        {summary_content}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
             else:
                 st.info("Summary not available.")
-                
+        
         with tabs[2]:
             if "analyze_content" in task_outputs:
-                # Get the analysis content
-                analysis_content = task_outputs["analyze_content"]
+                # Pre-process the analysis content to enhance formatting
+                analysis_content = sanitize_html_content(task_outputs["analyze_content"])
                 
-                # Create an expander for copying the analysis
-                with st.expander("Copy Analysis"):
-                    st.code(analysis_content, language="markdown")
+                # Define regex patterns
+                header_pattern = r'(?m)^(#{2,3})\s+(.+)$'
+                bullet_pattern = r'(?m)^- (.+)$'
+                numbered_list_pattern = r'(?m)^([0-9]+)\. (.+)$'
+                list_wrap_pattern = r'(<li [^>]*>.*?</li>(\s*<li [^>]*>.*?</li>)*)'
+                nested_list_pattern = r'(<li class="nested-item"[^>]*>.*?</li>(\s*<li class="nested-item"[^>]*>.*?</li>)*)'
+                # More robust pattern for bold text
+                bold_pattern = r'\*\*(.*?)\*\*'
+                # Pattern for bold section headers with colons
+                bold_section_pattern = r'\*\*(.*?)\*\*\s*:'
+                # Pattern for custom HTML header tags
+                custom_header_pattern = r'<h##\s+style="[^"]*">(.*?)</h##>'
+                # Pattern for malformed header tags from the example
+                malformed_header_pattern = r'<h##\s+style="([^"]*)">([^<]+)</h##>'
                 
-                # Display using Streamlit's native markdown support  
-                st.markdown(analysis_content)
+                # First, fix any malformed HTML headers
+                analysis_content = re.sub(custom_header_pattern, r'<h3 style="color: #4dabf7; margin-top: 1.5rem; margin-bottom: 1rem;">\1</h3>', analysis_content)
+                analysis_content = re.sub(malformed_header_pattern, r'<h3 style="\1">\2</h3>', analysis_content)
+                
+                # Apply standard formatting
+                analysis_content = re.sub(header_pattern, r'<h3 style="color: #4dabf7; margin-top: 1.5rem; margin-bottom: 1rem;">\2</h3>', analysis_content)
+                analysis_content = re.sub(bullet_pattern, r'<li style="margin-bottom: 0.8rem;">\1</li>', analysis_content)
+                analysis_content = re.sub(numbered_list_pattern, r'<li style="margin-bottom: 0.8rem;">\2</li>', analysis_content)
+                
+                # Handle bold section headers with colons first (more specific pattern)
+                analysis_content = re.sub(bold_section_pattern, r'<h4 style="color: #4dabf7; margin-top: 1.5rem; margin-bottom: 0.5rem; font-size: 1.1rem;">\1:</h4>', analysis_content)
+                
+                # Handle remaining bold text
+                analysis_content = re.sub(bold_pattern, r'<strong style="color: #4dabf7;">\1</strong>', analysis_content)
+                
+                # Handle nested lists first
+                if '<li class="nested-item"' in analysis_content:
+                    analysis_content = re.sub(nested_list_pattern, r'<ul class="nested-list" style="margin-left: 1.5rem; margin-bottom: 0.5rem;">\1</ul>', analysis_content, flags=re.DOTALL)
+                
+                # Wrap lists in ul tags if they're not already
+                if '<li ' in analysis_content and '<ul>' not in analysis_content:
+                    analysis_content = re.sub(list_wrap_pattern, r'<ul style="margin-left: 1.5rem; margin-bottom: 1.5rem;">\1</ul>', analysis_content, flags=re.DOTALL)
+                
+                st.markdown(f"""
+                <div class="card" style="background: #1E1E1E; border-radius: 8px; padding: 1.5rem; border: 1px solid #333; margin-top: 1rem;">
+                    <div style="color: #e0e0e0; line-height: 1.6; font-size: 1rem;">
+                        {analysis_content}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
             else:
                 st.info("Analysis not available.")
         
         with tabs[3]:
             if "create_action_plan" in task_outputs:
-                # Get the action plan content
-                action_plan_content = task_outputs["create_action_plan"]
+                # Pre-process the action plan content to enhance formatting
+                action_plan_content = sanitize_html_content(task_outputs["create_action_plan"])
                 
-                # Create an expander for copying the action plan
-                with st.expander("Copy Action Plan"):
-                    st.code(action_plan_content, language="markdown")
+                # Define regex patterns
+                header_pattern = r'(?m)^(#{2,3})\s+(.+)$'
+                action_header_pattern = r'(Action Plan:|Recommended Actions:|Next Steps:)'
+                bullet_pattern = r'(?m)^- (.+)$'
+                numbered_list_pattern = r'(?m)^([0-9]+)\. (.+)$'
+                list_wrap_pattern = r'(<li [^>]*>.*?</li>(\s*<li [^>]*>.*?</li>)*)'
+                nested_list_pattern = r'(<li class="nested-item"[^>]*>.*?</li>(\s*<li class="nested-item"[^>]*>.*?</li>)*)'
+                # More robust pattern for bold text
+                bold_pattern = r'\*\*(.*?)\*\*'
+                # Pattern for bold section headers with colons
+                bold_section_pattern = r'\*\*(.*?)\*\*\s*:'
+                # Pattern for custom HTML header tags
+                custom_header_pattern = r'<h##\s+style="[^"]*">(.*?)</h##>'
+                # Pattern for malformed header tags from the example
+                malformed_header_pattern = r'<h##\s+style="([^"]*)">([^<]+)</h##>'
                 
-                # Display using Streamlit's native markdown support
-                # if the action plan content is within fenced code blocks, then remove the top and bottom fences
-                action_plan_content = clean_markdown_fences(action_plan_content)
-                st.markdown(action_plan_content)
+                # First, fix any malformed HTML headers
+                action_plan_content = re.sub(custom_header_pattern, r'<h3 style="color: #4dabf7; margin-top: 1.5rem; margin-bottom: 1rem;">\1</h3>', action_plan_content)
+                action_plan_content = re.sub(malformed_header_pattern, r'<h3 style="\1">\2</h3>', action_plan_content)
+                
+                # Apply formatting
+                action_plan_content = re.sub(header_pattern, r'<h3 style="color: #4dabf7; margin-top: 1.5rem; margin-bottom: 1rem;">\2</h3>', action_plan_content)
+                action_plan_content = re.sub(action_header_pattern, r'<h3 style="color: #4dabf7; margin-top: 1rem; margin-bottom: 1rem;">\1</h3>', action_plan_content)
+                action_plan_content = re.sub(bullet_pattern, r'<li style="margin-bottom: 0.8rem;">\1</li>', action_plan_content)
+                action_plan_content = re.sub(numbered_list_pattern, r'<li style="margin-bottom: 0.8rem;">\2</li>', action_plan_content)
+                
+                # Handle bold section headers with colons first (more specific pattern)
+                action_plan_content = re.sub(bold_section_pattern, r'<h4 style="color: #4dabf7; margin-top: 1.5rem; margin-bottom: 0.5rem; font-size: 1.1rem;">\1:</h4>', action_plan_content)
+                
+                # Handle remaining bold text
+                action_plan_content = re.sub(bold_pattern, r'<strong style="color: #4dabf7;">\1</strong>', action_plan_content)
+                
+                # Handle nested lists first
+                if '<li class="nested-item"' in action_plan_content:
+                    action_plan_content = re.sub(nested_list_pattern, r'<ul class="nested-list" style="margin-left: 1.5rem; margin-bottom: 0.5rem;">\1</ul>', action_plan_content, flags=re.DOTALL)
+                
+                # Wrap lists in ul tags if they're not already
+                if '<li ' in action_plan_content and '<ul>' not in action_plan_content:
+                    action_plan_content = re.sub(list_wrap_pattern, r'<ul style="margin-left: 1.5rem; margin-bottom: 1.5rem;">\1</ul>', action_plan_content, flags=re.DOTALL)
+                
+                st.markdown(f"""
+                <div class="card" style="background: #1E1E1E; border-radius: 8px; padding: 1.5rem; border: 1px solid #333; margin-top: 1rem;">
+                    <div style="color: #e0e0e0; line-height: 1.6; font-size: 1rem;">
+                        {action_plan_content}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
             else:
                 st.info("Action plan not available.")
         
-        # Blog Post Tab
         with tabs[4]:
-            if "write_blog_post" in task_outputs:
-                # Use native Streamlit markdown for better rendering
-                st.markdown("### Blog Post")
-                
-                # Get the blog content
-                blog_content = task_outputs["write_blog_post"]
-                
-                # Create an expander for copying the blog post
-                with st.expander("Copy Blog Post"):
-                    st.code(blog_content, language="markdown")
-                    
-                # Display using Streamlit's native markdown support
-                # if the blog content is within fenced code blocks, then remove the top and bottom fences
-                blog_content = clean_markdown_fences(blog_content)
-                st.markdown(blog_content)
-            else:
-                st.info("Blog post not available.")
-        
-        # LinkedIn Post Tab
-        with tabs[5]:
-            if "write_linkedin_post" in task_outputs:
-                # Display LinkedIn header
-                st.markdown("""
-                <div style="display: flex; align-items: center; margin-bottom: 1rem;">
-                    <div style="width: 60px; height: 60px; border-radius: 50%; background-color: #0A66C2; display: flex; justify-content: center; align-items: center; margin-right: 1rem;">
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32" fill="#FFFFFF">
-                            <path d="M20.5 2h-17A1.5 1.5 0 002 3.5v17A1.5 1.5 0 003.5 22h17a1.5 1.5 0 001.5-1.5v-17A1.5 1.5 0 0020.5 2zM8 19H5v-9h3zM6.5 8.25A1.75 1.75 0 118.3 6.5a1.78 1.78 0 01-1.8 1.75zM19 19h-3v-4.74c0-1.42-.6-1.93-1.38-1.93A1.74 1.74 0 0013 14.19a.66.66 0 000 .14V19h-3v-9h2.9v1.3a3.11 3.11 0 012.7-1.4c1.55 0 3.36.86 3.36 3.66z"></path>
-                        </svg>
-                    </div>
-                    <div>
-                        <div style="font-weight: bold; color: #e0e0e0;">LinkedIn Post</div>
-                        <div style="color: #a0a0a0; font-size: 0.9rem;">Professional Network</div>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                # Get the LinkedIn content
-                linkedin_content = task_outputs["write_linkedin_post"]
-                
-                # Create an expander for copying the LinkedIn post
-                with st.expander("Copy LinkedIn Post"):
-                    st.code(linkedin_content, language="text")
-                
-                # Format hashtags for display (not for copy)
-                display_content = re.sub(r'(#\w+)', r'**\1**', linkedin_content)
-                
-                # Display using Streamlit's native markdown support
-                st.markdown(display_content)
-            else:
-                st.info("LinkedIn post not available.")
-        
-        # X/Twitter Post Tab
-        with tabs[6]:
-            if "write_tweet" in task_outputs:
-                # Display X/Twitter header
-                st.markdown("""
-                <div style="display: flex; align-items: center; margin-bottom: 1rem;">
-                    <div style="width: 60px; height: 60px; border-radius: 50%; background-color: #1DA1F2; display: flex; justify-content: center; align-items: center; margin-right: 1rem;">
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32" fill="#FFFFFF">
-                            <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"></path>
-                        </svg>
-                    </div>
-                    <div>
-                        <div style="font-weight: bold; color: #e0e0e0;">X (Twitter) Post</div>
-                        <div style="color: #a0a0a0; font-size: 0.9rem;">Social Media</div>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                # Get the tweet content
-                tweet_content = task_outputs["write_tweet"]
-                
-                # Create an expander for copying the tweet
-                with st.expander("Copy Tweet"):
-                    st.code(tweet_content, language="text")
-                
-                # Format hashtags and mentions for display (not for copy)
-                display_tweet = re.sub(r'(#\w+)', r'**\1**', tweet_content)
-                display_tweet = re.sub(r'(@\w+)', r'**\1**', display_tweet)
-                
-                # Display using Streamlit's native markdown support
-                st.markdown(display_tweet)
-            else:
-                st.info("X post not available.")
-        
-        with tabs[7]:
             st.markdown("<h3 style='margin-bottom: 1rem;'>Video Transcript</h3>", unsafe_allow_html=True)
             
             # Add toggles for timestamps
@@ -2428,7 +2240,7 @@ def main():
     if "settings" not in st.session_state:
         st.session_state.settings = {
             "model": "gpt-4o-mini",
-            "temperature": 0.2,
+            "temperature": 0.7,
             "use_cache": True
         }
     
@@ -2454,7 +2266,7 @@ def main():
         st.markdown("<h3 style='margin-bottom: 0.5rem;'>AI Model</h3>", unsafe_allow_html=True)
         model = st.selectbox(
             label="AI Model",
-            options=["gpt-4o-mini", "gemini-2.0-flash", "claude-3-7-sonnet-20250219"],
+            options=["gpt-4o-mini", "gpt-3.5-turbo", "gpt-4"],
             index=0,
             label_visibility="collapsed"
         )
@@ -2465,7 +2277,7 @@ def main():
             label="Temperature Value",
             min_value=0.0,
             max_value=1.0,
-            value=0.2,
+            value=0.7,
             step=0.1,
             label_visibility="collapsed",
             help="Higher values make output more creative, lower values make it more deterministic"
@@ -2572,312 +2384,311 @@ def main():
     # Main app content
     # Only show welcome text and input fields if analysis is not complete
     if not st.session_state.analysis_complete:
-        # Title with sparkle emoji
-        st.title("VideoGenius AI ✨")
-        # Use Streamlit's native input field for functionality
-        # Modern hero section with gradient
+        # write the title here and center it
+        st.markdown("<h1 style='text-align: center; margin: 0 auto; width: 100%;'>VideoGenius AI ✨</h1>", unsafe_allow_html=True)
+        # Create a two-column layout for the header and URL input
+        header_col, input_col = st.columns([1, 1])
         
-        # st.markdown("""
-        # <div style="background: linear-gradient(135deg, #1a1a1a, #2d2d2d); border-radius: 16px; margin: 0 auto 2.5rem auto; padding: 3rem 2rem; text-align: center; max-width: 800px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);">
-        #     <h2 style="font-size: 2rem; margin-bottom: 1.5rem; background: linear-gradient(90deg, #4dabf7, #56CCF2); -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-weight: 700;">
-        #         Unlock the Hidden Gems in Any YouTube Video
-        #     </h2>
-        #     <p style="font-size: 1.1rem; color: #e0e0e0; max-width: 600px; margin: 0 auto 2rem auto; line-height: 1.6;">
-        #         Our AI analyzes videos to deliver key insights, summaries, and allows interactive Q&A about any content.
-        #     </p>
-        # </div>
-        # """, unsafe_allow_html=True)
-        # Add spacing after title to prevent overlap
-        st.markdown("<div style='margin-top: 2rem;'></div>", unsafe_allow_html=True)
+        with header_col:
+            # Hero section with animated gradient
+            st.markdown("""
+            <div style="position: relative; height: 100%; padding: 2rem 0; overflow: hidden; border-radius: 12px; background: linear-gradient(45deg, #1a1a1a, #232323);">
+                <div style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: radial-gradient(circle at 30% 30%, rgba(77, 171, 247, 0.1), transparent 70%); z-index: 1;"></div>
+                <div style="position: relative; z-index: 2; padding: 1.5rem; text-align: center;">
+                    <p style="font-size: 1.2rem; color: #e0e0e0; max-width: 800px; margin: 0 auto 1.5rem auto; line-height: 1.6;">
+                        Unlock hidden insights in any YouTube video with AI-powered analysis
+                    </p>
+                    <div style="width: 80px; height: 3px; background: #4dabf7; margin: 0 auto 1.5rem auto; border-radius: 2px;"></div>
+                    <div style="display: flex; justify-content: center; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap;">
+                        <div style="display: flex; align-items: center; background: rgba(77, 171, 247, 0.1); padding: 0.5rem 0.8rem; border-radius: 8px; border: 1px solid rgba(77, 171, 247, 0.2);">
+                            <span style="font-size: 1.2rem; margin-right: 0.5rem;">🔍</span>
+                            <span style="color: #e0e0e0; font-size: 0.9rem;">Smart Analysis</span>
+                        </div>
+                        <div style="display: flex; align-items: center; background: rgba(77, 171, 247, 0.1); padding: 0.5rem 0.8rem; border-radius: 8px; border: 1px solid rgba(77, 171, 247, 0.2);">
+                            <span style="font-size: 1.2rem; margin-right: 0.5rem;">💬</span>
+                            <span style="color: #e0e0e0; font-size: 0.9rem;">Interactive Chat</span>
+                        </div>
+                        <div style="display: flex; align-items: center; background: rgba(77, 171, 247, 0.1); padding: 0.5rem 0.8rem; border-radius: 8px; border: 1px solid rgba(77, 171, 247, 0.2);">
+                            <span style="font-size: 1.2rem; margin-right: 0.5rem;">📊</span>
+                            <span style="color: #e0e0e0; font-size: 0.9rem;">Detailed Insights</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
         
-        st.markdown("""
-        <div class="url-input-container">
-            <div class="url-input-label">Paste a YouTube URL to get insights</div>
-        </div>
-        """, unsafe_allow_html=True)
-        url = st.text_input(
-            label="Enter YouTube URL",
-            placeholder="https://www.youtube.com/watch?v=...",
-            label_visibility="collapsed"
-        )
+        with input_col:
+            # Use a native Streamlit form for better UX
+            # Write about getting started here
+            st.markdown("""
+            <div style="background: #232323; padding: 1.5rem; border-radius: 12px; border: 1px solid #333333; margin: 1.5rem 0; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);">
+                <h3 style="color: #4dabf7; margin-bottom: 1rem;">Getting Started</h3>
+                <p>Paste any YouTube URL in the input field above and click Enter.</p>
+            </div>
+            """, unsafe_allow_html=True)
 
-        
-        # Modern URL input field with drop shadow and subtle animation
-        st.markdown("""
-        <style>
-        .url-input-container {
-            max-width: 700px;
-            margin: 0 auto 2rem auto;
-            position: relative;
-        }
-        .url-input-label {
-            font-size: 1.1rem;
-            color: #e0e0e0;
-            margin-bottom: 0.8rem;
-            text-align: center;
-            font-weight: 500;
-        }
-        </style>
-        """, unsafe_allow_html=True)
-        
-       
+            url = st.text_input(
+                label="Enter YouTube URL",
+                placeholder="Paste YouTube URL here (e.g., https://youtu.be/...)",
+                label_visibility="collapsed",
+            )
             
-        # Handle form submission
-        if url:
-            if not validate_youtube_url(url):
-                st.error("Please enter a valid YouTube URL")
-            elif not st.session_state.authenticated:
-                st.warning("Please log in to analyze videos")
-                st.session_state.show_auth = True
-            else:
-                # Rest of the analysis code...
-                with st.spinner("Analyzing video..."):
-                    try:
-                        # Reset chat state for new analysis
-                        st.session_state.chat_enabled = False
-                        st.session_state.chat_messages = []
-                        st.session_state.chat_details = None
-                        
-                        # Store the analysis start time
-                        st.session_state.analysis_start_time = datetime.now()
-                        
-                        # Create progress placeholder
-                        progress_placeholder = st.empty()
-                        status_placeholder = st.empty()
-                        
-                        # Initialize progress bar
-                        progress_bar = progress_placeholder.progress(0)
-                        status_placeholder.info("Fetching video transcript...")
-                        
-                        # Define progress update functions
-                        def update_progress(value):
-                            try:
-                                # Use thread-safe approach for Streamlit updates
-                                import streamlit as st
-                                from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
-                                
-                                # Only update if there's a valid context
-                                if get_script_run_ctx():
-                                    progress_bar.progress(value)
-                            except Exception as e:
-                                # Silently fail if we can't update the progress bar
-                                pass
-                        
-                        def update_status(message):
-                            try:
-                                # Use thread-safe approach for Streamlit updates
-                                import streamlit as st
-                                from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
-                                
-                                # Only update if there's a valid context
-                                if get_script_run_ctx():
-                                    status_placeholder.info(message)
-                            except Exception as e:
-                                # Silently fail if we can't update the status
-                                pass
-                        
-                        # Run the analysis
+            # Handle form submission outside the form
+            if url:
+                if not validate_youtube_url(url):
+                    st.error("Please enter a valid YouTube URL")
+                elif not st.session_state.authenticated:
+                    st.warning("Please log in to analyze videos")
+                    st.session_state.show_auth = True
+                else:
+                    # Rest of the analysis code...
+                    with st.spinner("Analyzing video..."):
                         try:
-                            # Get cache setting from session state
-                            use_cache = st.session_state.settings.get("use_cache", True)
+                            # Reset chat state for new analysis
+                            st.session_state.chat_enabled = False
+                            st.session_state.chat_messages = []
+                            st.session_state.chat_details = None
                             
-                            # Get video transcript
-                            timestamped_transcript, transcript_list, error = process_transcript_async(
-                                url, 
-                                use_cache=use_cache
-                            )
+                            # Store the analysis start time
+                            st.session_state.analysis_start_time = datetime.now()
                             
-                            if error:
-                                st.error(f"Error: {error}")
-                                return
+                            # Create progress placeholder
+                            progress_placeholder = st.empty()
+                            status_placeholder = st.empty()
                             
-                            if not timestamped_transcript or not transcript_list:
-                                st.error("Could not process video transcript. Please try another video.")
-                                return
+                            # Initialize progress bar
+                            progress_bar = progress_placeholder.progress(0)
+                            status_placeholder.info("Fetching video transcript...")
                             
-                            # Get video info
-                            video_info = get_video_info(url)
-                            if not video_info:
-                                st.warning("Could not fetch complete video information. Continuing with limited data.")
-                                video_info = {
-                                    "title": "Unknown Title",
-                                    "description": "No description available",
-                                    "channel": "Unknown Channel",
-                                    "views": "Unknown",
-                                    "likes": "Unknown",
-                                    "published": "Unknown"
-                                }
-                            
-                            # Update progress
-                            update_progress(10)
-                            update_status("Analyzing transcript...")
-                            
-                            # Convert transcript to text
-                            transcript_text = convert_transcript_list_to_text(transcript_list)
-                            
-                            # Extract video ID
-                            video_id = extract_video_id(url)
-                            
-                            # Store in session state
-                            st.session_state.video_id = video_id
-                            st.session_state.video_url = url
-                            st.session_state.video_info = video_info
-                            st.session_state.transcript_list = transcript_list
-                            st.session_state.transcript_text = transcript_text
-                            
-                            # Run analysis with timeout
-                            try:
-                                # Get settings from session state BEFORE creating the thread
-                                use_cache = st.session_state.settings.get("use_cache", True)
-                                model = st.session_state.settings.get("model", "gpt-4o-mini")
-                                temperature = st.session_state.settings.get("temperature", 0.7)
-                                
-                                # Set environment variables based on settings
-                                os.environ["LLM_MODEL"] = model
-                                os.environ["LLM_TEMPERATURE"] = str(temperature)
-                                
-                                logger.info(f"Using settings from UI: model={model}, temperature={temperature}, use_cache={use_cache}")
-                                
-                                # Force new analysis if checkbox is unchecked
-                                if not use_cache:
-                                    # Force clear the cache for this video
-                                    from src.youtube_analysis.utils.cache_utils import clear_analysis_cache
-                                    video_id = extract_video_id(url)
-                                    if video_id:
-                                        logger.info(f"Forcing new analysis by clearing cache for video {video_id}")
-                                        clear_analysis_cache(video_id)
-                                
-                                # Define function to run analysis
-                                def run_analysis_with_timeout():
-                                    logger.info(f"Starting analysis with use_cache={use_cache}, url={url}")
-                                    try:
-                                        analysis_result = run_analysis(
-                                            url,  
-                                            update_progress, 
-                                            update_status,
-                                            use_cache=use_cache  # Use the captured value from outside
-                                        )
-                                        # Handle the returned value properly
-                                        if isinstance(analysis_result, tuple) and len(analysis_result) == 2:
-                                            results, error = analysis_result
-                                            logger.info(f"Analysis complete, got result: {type(results)}, {results is not None}")
-                                            return results, error
-                                        else:
-                                            logger.error(f"Unexpected result format from run_analysis: {type(analysis_result)}")
-                                            return None, "Analysis returned unexpected result format"
-                                    except Exception as e:
-                                        logger.error(f"Exception in run_analysis_with_timeout: {str(e)}", exc_info=True)
-                                        return None, str(e)
-                                
-                                # Use ThreadPoolExecutor to run with timeout
-                                with concurrent.futures.ThreadPoolExecutor() as executor:
-                                    # Get current Streamlit run context before submitting to the thread
+                            # Define progress update functions
+                            def update_progress(value):
+                                try:
+                                    # Use thread-safe approach for Streamlit updates
+                                    import streamlit as st
                                     from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
-                                    ctx = get_script_run_ctx()
                                     
-                                    # Submit the task to the executor
-                                    future = executor.submit(run_analysis_with_timeout)
-                                    
-                                    # Add the context to the thread
-                                    if ctx:
-                                        add_script_run_ctx(future, ctx)
-                                        
-                                    try:
-                                        # Wait for up to 3 minutes
-                                        results, analysis_error = future.result(timeout=180)
-                                        logger.info(f"Analysis completed with results: {results is not None}, error: {analysis_error}")
-                                    except concurrent.futures.TimeoutError:
-                                        logger.error("Analysis timed out after 3 minutes")
-                                        st.error("Analysis took too long and timed out. Please try again later or try a different video.")
-                                        return
-                                    except Exception as e:
-                                        logger.error(f"Unexpected error during analysis: {str(e)}", exc_info=True)
-                                        st.error(f"An unexpected error occurred: {str(e)}")
-                                        return
-                                
-                                # Check for errors
-                                if analysis_error:
-                                    logger.error(f"Analysis error: {analysis_error}")
-                                    st.error(f"Analysis failed: {analysis_error}")
-                                    return
-                                
-                                if not results:
-                                    logger.error("Analysis returned no results")
-                                    st.error("Analysis failed to return results. Try turning off the 'Use Cache' option in settings and try again.")
-                                    return
-                                
-                                # Validate that task_outputs exists and has content
-                                if not isinstance(results, dict) or "task_outputs" not in results or not results["task_outputs"]:
-                                    logger.error(f"Analysis results missing task_outputs: {results}")
-                                    st.error("Analysis didn't generate proper results. Try turning off the 'Use Cache' option in settings and try again.")
-                                    return
-                                    
-                                # Log task outputs for debugging
-                                logger.info(f"Task outputs from analysis: {list(results['task_outputs'].keys())}")
-                                    
-                                # Store results in session state
-                                logger.info("Storing analysis results in session state")
-                                st.session_state.analysis_results = results
-                                st.session_state.analysis_complete = True
+                                    # Only update if there's a valid context
+                                    if get_script_run_ctx():
+                                        progress_bar.progress(value)
+                                except Exception as e:
+                                    # Silently fail if we can't update the progress bar
+                                    pass
                             
-                            except Exception as timeout_error:
-                                logger.exception(f"Error during analysis with timeout: {str(timeout_error)}")
-                                st.error(f"An error occurred during analysis: {str(timeout_error)}")
-                                return
+                            def update_status(message):
+                                try:
+                                    # Use thread-safe approach for Streamlit updates
+                                    import streamlit as st
+                                    from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+                                    
+                                    # Only update if there's a valid context
+                                    if get_script_run_ctx():
+                                        status_placeholder.info(message)
+                                except Exception as e:
+                                    # Silently fail if we can't update the status
+                                    pass
                             
-                            # Setup chat for video - this is needed for both cached and non-cached results
+                            # Run the analysis
                             try:
-                                # Import the chat setup function
-                                from src.youtube_analysis.chat import setup_chat_for_video
+                                # Get cache setting from session state
+                                use_cache = st.session_state.settings.get("use_cache", True)
                                 
-                                # Get transcript from results or session state
-                                transcript = results.get("transcript", st.session_state.transcript_text)
+                                # Get video transcript
+                                timestamped_transcript, transcript_list, error = process_transcript_async(
+                                    url, 
+                                    use_cache=use_cache
+                                )
                                 
-                                # Set up chat with the transcript and list
-                                chat_details = setup_chat_for_video(url, transcript, transcript_list)
+                                if error:
+                                    st.error(f"Error: {error}")
+                                    return
                                 
-                                if chat_details:
-                                    st.session_state.chat_details = chat_details
-                                    st.session_state.chat_enabled = True
+                                if not timestamped_transcript or not transcript_list:
+                                    st.error("Could not process video transcript. Please try another video.")
+                                    return
+                                
+                                # Get video info
+                                video_info = get_video_info(url)
+                                if not video_info:
+                                    st.warning("Could not fetch complete video information. Continuing with limited data.")
+                                    video_info = {
+                                        "title": "Unknown Title",
+                                        "description": "No description available",
+                                        "channel": "Unknown Channel",
+                                        "views": "Unknown",
+                                        "likes": "Unknown",
+                                        "published": "Unknown"
+                                    }
+                                
+                                # Update progress
+                                update_progress(10)
+                                update_status("Analyzing transcript...")
+                                
+                                # Convert transcript to text
+                                transcript_text = convert_transcript_list_to_text(transcript_list)
+                                
+                                # Extract video ID
+                                video_id = extract_video_id(url)
+                                
+                                # Store in session state
+                                st.session_state.video_id = video_id
+                                st.session_state.video_url = url
+                                st.session_state.video_info = video_info
+                                st.session_state.transcript_list = transcript_list
+                                st.session_state.transcript_text = transcript_text
+                                
+                                # Run analysis with timeout
+                                try:
+                                    # Get settings from session state BEFORE creating the thread
+                                    use_cache = st.session_state.settings.get("use_cache", True)
+                                    model = st.session_state.settings.get("model", "gpt-4o-mini")
+                                    temperature = st.session_state.settings.get("temperature", 0.7)
                                     
-                                    # Create welcome message
-                                    video_title = video_info.get('title', 'this video')
-                                    welcome_message = f"Hello! I'm your AI assistant for the video \"{video_title}\". Ask me any questions about the content, and I'll do my best to answer based on the transcript. I'll include timestamps [MM:SS] in my answers to help you locate information in the video."
+                                    # Set environment variables based on settings
+                                    os.environ["LLM_MODEL"] = model
+                                    os.environ["LLM_TEMPERATURE"] = str(temperature)
                                     
-                                    # Initialize chat messages
-                                    st.session_state.chat_messages = [
-                                        {
-                                            "role": "assistant", 
-                                            "content": welcome_message
-                                        }
-                                    ]
-                                else:
-                                    logger.error("Failed to set up chat for video")
+                                    logger.info(f"Using settings from UI: model={model}, temperature={temperature}, use_cache={use_cache}")
+                                    
+                                    # Force new analysis if checkbox is unchecked
+                                    if not use_cache:
+                                        # Force clear the cache for this video
+                                        from src.youtube_analysis.utils.cache_utils import clear_analysis_cache
+                                        video_id = extract_video_id(url)
+                                        if video_id:
+                                            logger.info(f"Forcing new analysis by clearing cache for video {video_id}")
+                                            clear_analysis_cache(video_id)
+                                    
+                                    # Define function to run analysis
+                                    def run_analysis_with_timeout():
+                                        logger.info(f"Starting analysis with use_cache={use_cache}, url={url}")
+                                        try:
+                                            analysis_result = run_analysis(
+                                                url,  
+                                                update_progress, 
+                                                update_status,
+                                                use_cache=use_cache  # Use the captured value from outside
+                                            )
+                                            # Handle the returned value properly
+                                            if isinstance(analysis_result, tuple) and len(analysis_result) == 2:
+                                                results, error = analysis_result
+                                                logger.info(f"Analysis complete, got result: {type(results)}, {results is not None}")
+                                                return results, error
+                                            else:
+                                                logger.error(f"Unexpected result format from run_analysis: {type(analysis_result)}")
+                                                return None, "Analysis returned unexpected result format"
+                                        except Exception as e:
+                                            logger.error(f"Exception in run_analysis_with_timeout: {str(e)}", exc_info=True)
+                                            return None, str(e)
+                                    
+                                    # Use ThreadPoolExecutor to run with timeout
+                                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                                        # Get current Streamlit run context before submitting to the thread
+                                        from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+                                        ctx = get_script_run_ctx()
+                                        
+                                        # Submit the task to the executor
+                                        future = executor.submit(run_analysis_with_timeout)
+                                        
+                                        # Add the context to the thread
+                                        if ctx:
+                                            add_script_run_ctx(future, ctx)
+                                            
+                                        try:
+                                            # Wait for up to 3 minutes
+                                            results, analysis_error = future.result(timeout=180)
+                                            logger.info(f"Analysis completed with results: {results is not None}, error: {analysis_error}")
+                                        except concurrent.futures.TimeoutError:
+                                            logger.error("Analysis timed out after 3 minutes")
+                                            st.error("Analysis took too long and timed out. Please try again later or try a different video.")
+                                            return
+                                        except Exception as e:
+                                            logger.error(f"Unexpected error during analysis: {str(e)}", exc_info=True)
+                                            st.error(f"An unexpected error occurred: {str(e)}")
+                                            return
+                                    
+                                    # Check for errors
+                                    if analysis_error:
+                                        logger.error(f"Analysis error: {analysis_error}")
+                                        st.error(f"Analysis failed: {analysis_error}")
+                                        return
+                                    
+                                    if not results:
+                                        logger.error("Analysis returned no results")
+                                        st.error("Analysis failed to return results. Try turning off the 'Use Cache' option in settings and try again.")
+                                        return
+                                    
+                                    # Validate that task_outputs exists and has content
+                                    if not isinstance(results, dict) or "task_outputs" not in results or not results["task_outputs"]:
+                                        logger.error(f"Analysis results missing task_outputs: {results}")
+                                        st.error("Analysis didn't generate proper results. Try turning off the 'Use Cache' option in settings and try again.")
+                                        return
+                                        
+                                    # Log task outputs for debugging
+                                    logger.info(f"Task outputs from analysis: {list(results['task_outputs'].keys())}")
+                                        
+                                    # Store results in session state
+                                    logger.info("Storing analysis results in session state")
+                                    st.session_state.analysis_results = results
+                                    st.session_state.analysis_complete = True
+                                
+                                except Exception as timeout_error:
+                                    logger.exception(f"Error during analysis with timeout: {str(timeout_error)}")
+                                    st.error(f"An error occurred during analysis: {str(timeout_error)}")
+                                    return
+                                
+                                # Setup chat for video - this is needed for both cached and non-cached results
+                                try:
+                                    # Import the chat setup function
+                                    from src.youtube_analysis.chat import setup_chat_for_video
+                                    
+                                    # Get transcript from results or session state
+                                    transcript = results.get("transcript", st.session_state.transcript_text)
+                                    
+                                    # Set up chat with the transcript and list
+                                    chat_details = setup_chat_for_video(url, transcript, transcript_list)
+                                    
+                                    if chat_details:
+                                        st.session_state.chat_details = chat_details
+                                        st.session_state.chat_enabled = True
+                                        
+                                        # Create welcome message
+                                        video_title = video_info.get('title', 'this video')
+                                        welcome_message = f"Hello! I'm your AI assistant for the video \"{video_title}\". Ask me any questions about the content, and I'll do my best to answer based on the transcript. I'll include timestamps [MM:SS] in my answers to help you locate information in the video."
+                                        
+                                        # Initialize chat messages
+                                        st.session_state.chat_messages = [
+                                            {
+                                                "role": "assistant", 
+                                                "content": welcome_message
+                                            }
+                                        ]
+                                    else:
+                                        logger.error("Failed to set up chat for video")
+                                        st.session_state.chat_enabled = False
+                                except Exception as chat_setup_error:
+                                    logger.exception(f"Error setting up chat: {str(chat_setup_error)}")
                                     st.session_state.chat_enabled = False
-                            except Exception as chat_setup_error:
-                                logger.exception(f"Error setting up chat: {str(chat_setup_error)}")
-                                st.session_state.chat_enabled = False
-                            
-                            # Clear progress
-                            progress_placeholder.progress(100)
-                            time.sleep(0.5)
-                            progress_placeholder.empty()
-                            status_placeholder.empty()
-                            
-                            # Show success message
-                            st.success("Analysis complete!")
-                            logger.info(f"Analysis completed successfully for video: {url}")
-                            
-                            # Force a rerun to update the UI
-                            st.rerun()
-                        except Exception as analysis_error:
-                            logger.exception(f"Exception during analysis: {str(analysis_error)}")
-                            st.error(f"Analysis failed: {str(analysis_error)}")
+                                
+                                # Clear progress
+                                progress_placeholder.progress(100)
+                                time.sleep(0.5)
+                                progress_placeholder.empty()
+                                status_placeholder.empty()
+                                
+                                # Show success message
+                                st.success("Analysis complete!")
+                                logger.info(f"Analysis completed successfully for video: {url}")
+                                
+                                # Force a rerun to update the UI
+                                st.rerun()
+                            except Exception as analysis_error:
+                                logger.exception(f"Exception during analysis: {str(analysis_error)}")
+                                st.error(f"Analysis failed: {str(analysis_error)}")
+                                return
+                        except Exception as e:
+                            logger.exception(f"General error processing video: {str(e)}")
+                            st.error(f"An error occurred: {str(e)}")
                             return
-                    except Exception as e:
-                        logger.exception(f"General error processing video: {str(e)}")
-                        st.error(f"An error occurred: {str(e)}")
-                        return
         
         # If URL is provided, show video info
         if url and validate_youtube_url(url):

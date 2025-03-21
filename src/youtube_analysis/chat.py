@@ -12,6 +12,15 @@ from langchain_core.tools import Tool
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage, BaseMessage
 from langgraph.prebuilt import create_react_agent
 from langchain.schema import Document
+from langchain_anthropic import ChatAnthropic
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_tavily import TavilySearch
+import streamlit as st
+import os
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from .utils.logging import get_logger
 from .utils.youtube_utils import extract_video_id, get_video_info
@@ -135,35 +144,78 @@ def create_agent_graph(vectorstore: FAISS, video_metadata: Dict[str, Any], has_t
         A LangGraph agent
     """
     # Create language model
-    model_name = os.environ.get("LLM_MODEL", "gpt-4o-mini")
-    llm = ChatOpenAI(temperature=0.2, model_name=model_name)
+    # Get model settings from streamlit session state if available, otherwise use env vars
+    if "settings" in st.session_state and st.session_state.settings:
+        model_name = st.session_state.settings.get("model", os.environ.get("LLM_MODEL", "gpt-4o-mini"))
+        temperature = float(st.session_state.settings.get("temperature", os.environ.get("LLM_TEMPERATURE", "0.2")))
+    else:
+        model_name = os.environ.get("LLM_MODEL", "gpt-4o-mini")
+        temperature = float(os.environ.get("LLM_TEMPERATURE", "0.2"))
+    logger.info(f"Creating chat agent with model: {model_name}, temperature: {temperature}")
+    if model_name.startswith("gpt"):
+        llm = ChatOpenAI(temperature=temperature, model=model_name)
+    elif model_name.startswith("claude"):
+        llm = ChatAnthropic(temperature=temperature, model=model_name, api_key=os.getenv("ANTHROPIC_API_KEY"))
+    elif model_name.startswith("gemini"):
+        # Format the model name to include the 'gemini/' prefix for LiteLLM
+        llm = ChatGoogleGenerativeAI(temperature=temperature, model=model_name, api_key=os.getenv("GEMINI_API_KEY"))
+
+    # Create Tavily search tool
+    search_tool = TavilySearch(
+        max_results=5
+    )
     
     # Create retriever tool
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+    
+    # Define a wrapper function for the retriever to log the results
+    def search_with_logging(query):
+        logger.info(f"Searching for: {query}")
+        results = retriever.invoke(query)
+        
+        # Log the retrieved chunks
+        logger.info(f"Retrieved {len(results)} chunks:")
+        for i, doc in enumerate(results):
+            content = doc.page_content[:100] + "..." if len(doc.page_content) > 100 else doc.page_content
+            metadata_str = str(doc.metadata)
+            logger.info(f"Chunk {i+1}: {content} | Metadata: {metadata_str}")
+        
+        if has_timestamps:
+            formatted_results = format_timestamped_results(results)
+        else:
+            formatted_results = "\n\n".join([doc.page_content for doc in results])
+        
+        logger.info(f"Formatted results: {formatted_results[:200]}...")
+        return formatted_results
     
     # Define the search tool with updated retriever usage
     if has_timestamps:
         yt_retriever_tool = Tool(
             name="YouTube_Video_Search",
             description=f"Useful for searching information in the YouTube video transcript. Use this tool when the user asks about the content of the video with ID {video_metadata['video_id']}.",
-            func=lambda query: format_timestamped_results(retriever.invoke(query))
+            func=search_with_logging
         )
     else:
         yt_retriever_tool = Tool(
             name="YouTube_Video_Search",
             description=f"Useful for searching information in the YouTube video transcript. Use this tool when the user asks about the content of the video with ID {video_metadata['video_id']}.",
-            func=lambda query: "\n\n".join([doc.page_content for doc in retriever.invoke(query)])
+            func=search_with_logging
         )
     
-    # Define the video info tool
+    # Define the video info tool with logging
+    def get_video_info_with_logging(_):
+        info = f"Video URL: {video_metadata['youtube_url']}\nVideo ID: {video_metadata['video_id']}\nTitle: {video_metadata.get('title', 'Unknown')}\nDescription: {video_metadata.get('description', 'No description available')}"
+        logger.info(f"Video info requested: {info}")
+        return info
+    
     video_info_tool = Tool(
         name="YouTube_Video_Info",
         description="Provides basic information about the YouTube video being analyzed.",
-        func=lambda _: f"Video URL: {video_metadata['youtube_url']}\nVideo ID: {video_metadata['video_id']}\nTitle: {video_metadata.get('title', 'Unknown')}\nDescription: {video_metadata.get('description', 'No description available')}"
+        func=get_video_info_with_logging
     )
     
     # Create tools list
-    tools = [yt_retriever_tool, video_info_tool]
+    tools = [yt_retriever_tool, video_info_tool, search_tool]
     
     # Create system message with video description
     video_title = video_metadata.get('title', 'Unknown')
@@ -179,10 +231,13 @@ You can answer questions about this video and also handle general questions not 
 
 For questions about the video content, use the YouTube_Video_Search tool to find relevant information in the transcript.
 For questions about the video itself (URL, ID, title, description), use the YouTube_Video_Info tool.
-For general questions not related to the video, use your own knowledge to answer.
+If the user asks about a concept that is not clearly explained in the video, use the Tavily_Search tool to find relevant information online.
+Also, if the question is not related to the video but if it is a valid question that can be answered by the internet, use the Tavily_Search tool to find relevant information online.
+For general questions not related to the video, use your own knowledge to answer or use the Tavily_Search tool to find relevant information online.
 
 Always be helpful, accurate, and concise in your responses.
 If you don't know the answer to a question about the video, say so rather than making up information.
+If you are searching the internet for information, then use clever search queries to get the most relevant information.
 
 IMPORTANT: When answering questions about the video content, always include the timestamp citations from the transcript in your response. 
 These timestamps indicate when in the video the information was mentioned. Format citations like [MM:SS] in your answers.
@@ -190,29 +245,47 @@ These timestamps indicate when in the video the information was mentioned. Forma
 IMPORTANT: Use the chat history to maintain context of the conversation. Refer back to previous questions and answers when relevant.
 """
     
+    logger.info(f"System message: {system_message_content[:200]}...")
+    
     # Create a proper prompt template with the system message
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_message_content),
         ("placeholder", "{messages}"),
     ])
     
+    # Create a wrapper for the LLM to log inputs and outputs
+    class LoggingLLM:
+        def __init__(self, llm):
+            self.llm = llm
+        
+        def invoke(self, messages, **kwargs):
+            logger.info(f"LLM Input: {str(messages)[:500]}...")
+            response = self.llm.invoke(messages, **kwargs)
+            logger.info(f"LLM Output: {str(response)[:500]}...")
+            return response
+        
+        def __getattr__(self, name):
+            return getattr(self.llm, name)
+    
+    logging_llm = LoggingLLM(llm)
+    
     # Create the agent using LangGraph's create_react_agent with the correct signature
     try:
         # First attempt: Try with llm and tools as positional, prompt as keyword
-        agent_executor = create_react_agent(llm, tools, prompt=prompt)
+        agent_executor = create_react_agent(logging_llm, tools, prompt=prompt)
         logger.info("Created agent with prompt as keyword argument")
     except TypeError as e:
         try:
             # Second attempt: Try with just llm and tools
-            agent_executor = create_react_agent(llm, tools)
+            agent_executor = create_react_agent(logging_llm, tools)
             logger.info("Created agent without prompt template")
         except Exception as e:
             # If that fails too, log the error and try a different approach
             logger.error(f"Error creating agent with just llm and tools: {str(e)}")
             # Final attempt: Try with a dictionary of all parameters
             agent_executor = create_react_agent(
-                llm=llm, 
-                tools=tools
+                llm=logging_llm, 
+                tools=tools,
             )
             logger.info("Created agent with named parameters")
     except Exception as e:
@@ -253,8 +326,8 @@ def setup_chat_for_video(youtube_url: str, transcript: str, transcript_list: Opt
     
     Args:
         youtube_url: The URL of the YouTube video
-        transcript: The transcript of the video
-        transcript_list: Optional list of transcript items with timestamps
+        transcript: The transcript of the video (already retrieved during analysis)
+        transcript_list: Optional list of transcript items with timestamps (already retrieved)
         
     Returns:
         A dictionary containing the chat setup details
@@ -262,24 +335,47 @@ def setup_chat_for_video(youtube_url: str, transcript: str, transcript_list: Opt
     try:
         # Extract video ID
         video_id = extract_video_id(youtube_url)
+        if not video_id:
+            logger.error(f"Failed to extract video ID from URL: {youtube_url}")
+            return None
         
-        # Get video information (title, description, etc.)
+        # Log that we're using the already retrieved transcript
+        logger.info(f"Setting up chat using already retrieved transcript for video ID: {video_id}")
+        logger.info(f"Transcript length: {len(transcript)} characters")
+        if transcript_list:
+            logger.info(f"Transcript list contains {len(transcript_list)} segments")
+        
+        # Get video information from the already retrieved data
         try:
-            video_info = get_video_info(video_id)
-            logger.info(f"Retrieved video info for chat: {video_info['title']}")
+            # Use the video_id to get video info
+            video_info = get_video_info(youtube_url)
+            
+            if not video_info:
+                logger.warning(f"Could not get video info for {video_id}, using default values")
+                video_info = {
+                    'video_id': video_id,
+                    'title': f"YouTube Video ({video_id})",
+                    'description': "Video description unavailable.",
+                    'url': youtube_url
+                }
+            
+            logger.info(f"Using video info for chat: {video_info['title']}")
         except Exception as e:
             logger.error(f"Error retrieving video info for chat: {str(e)}")
             # Provide default video info if retrieval fails
             video_info = {
-                "title": f"YouTube Video {video_id}",
-                "description": "No description available due to API error."
+                'video_id': video_id,
+                'title': f"YouTube Video ({video_id})",
+                'description': "Video description unavailable.",
+                'youtube_url': youtube_url
             }
             logger.info(f"Using default video info for chat with {video_id}")
         
         # Check if we have timestamped transcript
         has_timestamps = transcript_list is not None and len(transcript_list) > 0
         
-        # Create vector store
+        # Create vector store from the provided transcript
+        logger.info(f"Creating vector store from the provided transcript (has timestamps: {has_timestamps})")
         vectorstore = create_vectorstore(transcript, transcript_list)
         logger.info(f"Successfully created vector store for chat (with timestamps: {has_timestamps})")
         
@@ -287,11 +383,13 @@ def setup_chat_for_video(youtube_url: str, transcript: str, transcript_list: Opt
         video_metadata = {
             "video_id": video_id,
             "youtube_url": youtube_url,
-            "title": video_info.get("title", f"YouTube Video {video_id}"),
+            "title": video_info.get("title", f"YouTube Video ({video_id})"),
             "description": video_info.get("description", "No description available")
         }
         
-        # Create agent
+        # Create agent using the same model as specified in environment variables
+        # This ensures the chat model is the same as the analysis model
+        logger.info("Creating chat agent with the same model settings as analysis")
         agent = create_agent_graph(vectorstore, video_metadata, has_timestamps)
         logger.info("Successfully created agent for chat")
         
@@ -302,7 +400,7 @@ def setup_chat_for_video(youtube_url: str, transcript: str, transcript_list: Opt
         return {
             "video_id": video_id,
             "youtube_url": youtube_url,
-            "title": video_info.get("title", f"YouTube Video {video_id}"),
+            "title": video_info.get("title", f"YouTube Video ({video_id})"),
             "description": video_info.get("description", "No description available"),
             "agent": agent,
             "thread_id": thread_id,
