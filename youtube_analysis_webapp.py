@@ -2006,6 +2006,8 @@ def display_analysis_results(results: Dict[str, Any]):
                     st.code(action_plan_content, language="markdown")
                 
                 # Display using Streamlit's native markdown support
+                # if the action plan content is within fenced code blocks, then remove the top and bottom fences
+                action_plan_content = clean_markdown_fences(action_plan_content)
                 st.markdown(action_plan_content)
             else:
                 st.info("Action plan not available.")

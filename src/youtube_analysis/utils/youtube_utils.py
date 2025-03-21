@@ -402,6 +402,6 @@ def clear_cache(video_id: Optional[str] = None) -> bool:
 
 def clean_markdown_fences(content):
     """Remove markdown code fences from the content."""
-    content = re.sub(r'^```markdown\s*', '', content)
+    content = re.sub(r'^```markdown\s*|```\s*', '', content)
     content = re.sub(r'^```\s*$', '', content)
     return content

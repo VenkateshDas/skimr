@@ -115,7 +115,7 @@ write_report:
 
     - Classification and Context Tag
     - Basic TL;DR (for quick scanning)
-    - Deep Dive Summary (expandable/collapsible for users who want more detail)
+    - Deep Dive Summary
     - Key Points
     - Concise Analysis Notes with Emotional Tone Assessment
     - Direct Advisor Recommendations and Action Plan
