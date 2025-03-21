@@ -12,6 +12,15 @@ from langchain_core.tools import Tool
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage, BaseMessage
 from langgraph.prebuilt import create_react_agent
 from langchain.schema import Document
+from langchain_anthropic import ChatAnthropic
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_tavily import TavilySearch
+import streamlit as st
+import os
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from .utils.logging import get_logger
 from .utils.youtube_utils import extract_video_id, get_video_info
@@ -135,13 +144,29 @@ def create_agent_graph(vectorstore: FAISS, video_metadata: Dict[str, Any], has_t
         A LangGraph agent
     """
     # Create language model
-    model_name = os.environ.get("LLM_MODEL", "gpt-4o-mini")
-    temperature = float(os.environ.get("LLM_TEMPERATURE", "0.2"))
+    # Get model settings from streamlit session state if available, otherwise use env vars
+    if "settings" in st.session_state and st.session_state.settings:
+        model_name = st.session_state.settings.get("model", os.environ.get("LLM_MODEL", "gpt-4o-mini"))
+        temperature = float(st.session_state.settings.get("temperature", os.environ.get("LLM_TEMPERATURE", "0.2")))
+    else:
+        model_name = os.environ.get("LLM_MODEL", "gpt-4o-mini")
+        temperature = float(os.environ.get("LLM_TEMPERATURE", "0.2"))
     logger.info(f"Creating chat agent with model: {model_name}, temperature: {temperature}")
-    llm = ChatOpenAI(temperature=temperature, model_name=model_name)
+    if model_name.startswith("gpt"):
+        llm = ChatOpenAI(temperature=temperature, model=model_name)
+    elif model_name.startswith("claude"):
+        llm = ChatAnthropic(temperature=temperature, model=model_name, api_key=os.getenv("ANTHROPIC_API_KEY"))
+    elif model_name.startswith("gemini"):
+        # Format the model name to include the 'gemini/' prefix for LiteLLM
+        llm = ChatGoogleGenerativeAI(temperature=temperature, model=model_name, api_key=os.getenv("GEMINI_API_KEY"))
+
+    # Create Tavily search tool
+    search_tool = TavilySearch(
+        max_results=5
+    )
     
     # Create retriever tool
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
     
     # Define a wrapper function for the retriever to log the results
     def search_with_logging(query):
@@ -190,7 +215,7 @@ def create_agent_graph(vectorstore: FAISS, video_metadata: Dict[str, Any], has_t
     )
     
     # Create tools list
-    tools = [yt_retriever_tool, video_info_tool]
+    tools = [yt_retriever_tool, video_info_tool, search_tool]
     
     # Create system message with video description
     video_title = video_metadata.get('title', 'Unknown')
@@ -206,10 +231,13 @@ You can answer questions about this video and also handle general questions not 
 
 For questions about the video content, use the YouTube_Video_Search tool to find relevant information in the transcript.
 For questions about the video itself (URL, ID, title, description), use the YouTube_Video_Info tool.
-For general questions not related to the video, use your own knowledge to answer.
+If the user asks about a concept that is not clearly explained in the video, use the Tavily_Search tool to find relevant information online.
+Also, if the question is not related to the video but if it is a valid question that can be answered by the internet, use the Tavily_Search tool to find relevant information online.
+For general questions not related to the video, use your own knowledge to answer or use the Tavily_Search tool to find relevant information online.
 
 Always be helpful, accurate, and concise in your responses.
 If you don't know the answer to a question about the video, say so rather than making up information.
+If you are searching the internet for information, then use clever search queries to get the most relevant information.
 
 IMPORTANT: When answering questions about the video content, always include the timestamp citations from the transcript in your response. 
 These timestamps indicate when in the video the information was mentioned. Format citations like [MM:SS] in your answers.
@@ -257,7 +285,7 @@ IMPORTANT: Use the chat history to maintain context of the conversation. Refer b
             # Final attempt: Try with a dictionary of all parameters
             agent_executor = create_react_agent(
                 llm=logging_llm, 
-                tools=tools
+                tools=tools,
             )
             logger.info("Created agent with named parameters")
     except Exception as e:

@@ -203,9 +203,8 @@ def get_transcript(url: str, use_cache: bool = True) -> str:
         except Exception as e:
             raise ValueError(f"Could not get transcript: {str(e)}")
         
-        # Format transcript
-        formatter = TextFormatter()
-        transcript_text = formatter.format_transcript(transcript_list)
+        # Format transcript manually instead of using TextFormatter
+        transcript_text = "\n".join([item.get('text', '') for item in transcript_list])
         
         # Cache the transcript
         if use_cache:
@@ -400,3 +399,9 @@ def clear_cache(video_id: Optional[str] = None) -> bool:
     except Exception as e:
         logger.error(f"Error clearing cache: {str(e)}")
         return False 
+
+def clean_markdown_fences(content):
+    """Remove markdown code fences from the content."""
+    content = re.sub(r'^```markdown\s*', '', content)
+    content = re.sub(r'^```\s*$', '', content)
+    return content

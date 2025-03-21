@@ -189,7 +189,7 @@ def run_analysis(youtube_url: str, progress_callback=None, status_callback=None,
         
         # Get model and temperature from environment variables
         model = os.environ.get("LLM_MODEL", "gpt-4o-mini")
-        temperature = float(os.environ.get("LLM_TEMPERATURE", "0.7"))
+        temperature = float(os.environ.get("LLM_TEMPERATURE", "0.2"))
         
         logger.info(f"Creating YouTubeAnalysisCrew with model={model}, temperature={temperature}")
         crew_instance = YouTubeAnalysisCrew(model_name=model, temperature=temperature)

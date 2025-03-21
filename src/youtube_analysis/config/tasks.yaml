@@ -70,6 +70,8 @@ analyze_content:
     - Note any emotional undertones (enthusiasm, urgency, caution, etc.)
     - Assess the overall presentation style (formal, conversational, technical, etc.)
 
+    Do not include the complete transcript in the output.
+
     Include brief, relevant quotes or examples for clarity.
 
   expected_output: >
@@ -117,7 +119,12 @@ write_report:
     - Key Points
     - Concise Analysis Notes with Emotional Tone Assessment
     - Direct Advisor Recommendations and Action Plan
-    - Potential Challenges and Simple Solutions
+    - Potential Challenges and Solutions
+    - Current Trends and Insights
+    - Key Quotes
+    - Further Reading and Resources
+
+    For getting the current trends and insights, further reading and resources, use the Search tool
 
     You must provide a suitable title for the report. It must not be like "Markdown Report" or "YouTube Analysis Report".
     Prioritize clarity, readability, and brevity, eliminating redundancy to create superior quality, highly effective notes.
@@ -128,3 +135,103 @@ write_report:
   expected_output: >
     A structured, contextually-layered Markdown report crafted with both basic and detailed information layers,
     optimized for immediate understanding with options for deeper exploration based on user needs.
+
+write_blog_post:
+  description: >
+    Using the information from the report and transcript, create a comprehensive blog post about the YouTube video.
+    
+    Here is the YouTube video transcription:
+    {transcript}
+    
+    Use the report of the youtube video analysis from the Write Report task.
+    
+    Create an engaging, well-structured blog post that:
+    
+    - Has an attention-grabbing headline and introduction
+    - Provides comprehensive coverage of the video's content
+    - Includes relevant subheadings for easy navigation
+    - Elaborates on key points with additional context and examples
+    - Incorporates relevant quotes from the video when appropriate
+    - Concludes with a summary and possible call-to-action
+    - Uses a tone appropriate for the content category (educational, technical, business, etc.)
+    - Make sure to provide a personal perspective section where you share your own thoughts and opinions about the topic.
+    - Make sure to include the source YouTube video link in the blog post.
+    - At the end provide further reading and resources section where you provide relevant links to the topic.
+
+    Also make sure to include extra information that are interesting to this topic from the internet.
+    Ask clever questions while using the Search tool to get the latest information about the topic.
+    
+    Aim for a 1000-1500 word blog post that would engage readers and provide value even for those who haven't watched the video.
+    Format the blog post properly with Markdown for easy reading.
+
+  expected_output: >
+    A comprehensive, well-structured blog post in Markdown format that thoroughly explains the video content
+    in an engaging way, with proper formatting, subheadings, and appropriate tone for the content category.It must 
+    provide more value to the reader than just the video content.
+
+write_linkedin_post:
+  description: >
+    Using the information from the report and transcript, create a professional LinkedIn post about the YouTube video.
+    
+    Here is the YouTube video transcription:
+    {transcript}
+    
+    Use the report of the youtube video analysis from the Write Report task.
+
+    The linkedin post should have a creative hook in the first sentence.
+    The post must breakdown the technical content into easy to understand points and
+    then provide key takeaways in a concise manner.
+    
+    Create a compelling LinkedIn post that:
+    
+    - It must not look anything like a AI generated post. It must feel like a human wrote it.
+    - Opens with a creative professional hook to capture attention
+    - The content must provide absolute and useful value to the reader without being too promotional or salesy. 
+    - Write it from a curious professional perspective looking at the pros and cons of the topic.
+    - Uses a conversational yet professional tone
+    - You must provide a personal perspective dissecting the topic in a interesting way that will make the reader curious.
+    - Includes relevant hashtags (5-7) based on the content category
+    - Encourages engagement (comments, sharing perspectives)
+    - Ends with a clear call-to-action and the source YouTube video link  
+    - Stays within LinkedIn's optimal length (1300-1600 characters)
+    
+    The post should provide value to professionals in relevant fields while encouraging them to watch the full video.
+
+  expected_output: >
+    A concise, professional LinkedIn post that effectively summarizes key insights from the video,
+    includes appropriate hashtags, encourages engagement, and provides the original YouTube video source link.
+    It must not look anything like a AI generated post. It must feel like a human wrote it.
+
+write_tweet:
+  description: >
+    Using the information from the report and transcript, create an engaging tweet about the YouTube video.
+    
+    Use the report of the youtube video analysis from the Write Report task.
+    
+    Use the classification and context tag from the Classify Video task.
+    
+    Create a compelling tweet that:
+    
+    - Provide a hook in the first sentence that is attention grabbing with a statement/question that is not obvious. 
+    - Captures the essence of the video in under 280 characters
+    - Uses a writing style similar to popular influencers in the video's category
+    - Includes 1-2 relevant hashtags
+    - Has an engaging hook or question
+    - Encourages clicks to the video
+    - Maintains the core message while being conversational
+    
+    For different categories, emulate these influencer styles:
+    - Technology: Similar to @lexfridman or @naval
+    - Business: Similar to @garyvee or @simonsinek
+    - Education: Similar to @mrdustinklee or @edutopia
+    - Health & Wellness: Similar to @drmarkhumanmd or @mindvalley
+    - Science: Similar to @neiltyson or @scifri
+    - Finance: Similar to @ramit or @theramoneycoach
+    - Personal Development: Similar to @jamesclear or @brenebrown
+    
+    The tweet should make users want to learn more while giving them a taste of the video's value.
+    It must not look anything like a AI generated post. It must feel like a human wrote it.
+
+  expected_output: >
+    An engaging, concise tweet in the style of relevant category influencers that captures the
+    essence of the video content, includes appropriate hashtags, and encourages viewers to watch the full video.

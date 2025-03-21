@@ -84,7 +84,7 @@ def setup_sidebar(version: str):
         # Model selection
         model = st.selectbox(
             label="Model",
-            options=["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"],
+            options=["gpt-4o-mini", "gemini-2.0-flash", "claude-3-7-sonnet-20250219" ],
             index=0
         )
         
