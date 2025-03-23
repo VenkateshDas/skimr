@@ -1,11 +1,13 @@
-classify_video:
+classify_and_summarize_content:
   description: >
-    Your task is to classify the YouTube video content based on its transcription.
+    Your task is to classify and summarize the YouTube video content based on its transcription.
     
-    You will receive the transcription of the YouTube video as input.
-    Here is the transcription:
+    The title of the YouTube video is: {video_title}
+    
+    Here is the YouTube video transcription:
     {transcript}
     
+    **Part 1: Classification**
     Please classify this video into one of the following categories:
     - Technology
     - Business
@@ -27,18 +29,8 @@ classify_video:
     Provide a brief explanation for your classification choice, highlighting key terms or themes
     from the transcript that support your decision. If the video spans multiple categories,
     choose the most dominant one and mention the secondary categories in your explanation.
-
-  expected_output: >
-    A clear classification of the video into one of the specified categories and context tags, along with
-    a brief explanation justifying the classification based on the transcript content.
-
-summarize_content:
-  description: >
-    The title of the YouTube video is: {video_title}
-
-    Here is the YouTube video transcription:
-    {transcript}
-
+    
+    **Part 2: Summary**
     Create an adaptive, layered summary of the YouTube video transcript, including:
 
     1. Basic TL;DR Layer: Briefly summarize the video's core message in 3-4 clear sentences.
@@ -52,10 +44,12 @@ summarize_content:
     review, etc.) to make the information more relevant to how the content is presented.
 
   expected_output: >
-    Multi-layered, context-aware summary featuring both a succinct TL;DR, a comprehensive deep dive option,
+    A clear classification of the video into one of the specified categories and context tags, along with
+    a brief explanation justifying the classification based on the transcript content. Following this,
+    a multi-layered, context-aware summary featuring both a succinct TL;DR, a comprehensive deep dive option,
     and essential key points, styled appropriately for the video's context tag.
 
-analyze_content:
+analyze_and_plan_content:
   description: >
     The title of the YouTube video is: {video_title}
     The current date and time is: {current_datetime}
@@ -63,89 +57,37 @@ analyze_content:
     Here is the YouTube video transcription:
     {transcript}
 
-    Provide concise, efficient notes analyzing critical insights from the video content, including:
-
+    **Part 1: Content Analysis**
+    Provide concise, efficient notes on the critical insights from the video, including:
     - Main concept, product, or service discussed
     - Intended audience and relevance
     - Unique points or value propositions
     - Significant technical or practical details
-    
+
     Additionally, analyze the emotional tone of the content:
     - Identify whether the speaker's approach is primarily informative, persuasive, or biased
     - Note any emotional undertones (enthusiasm, urgency, caution, etc.)
     - Assess the overall presentation style (formal, conversational, technical, etc.)
 
-    Do not include the complete transcript in the output.
+    You may include brief, relevant quotes or examples for clarity, but do not include the complete transcript.
 
-    Include brief, relevant quotes or examples for clarity.
-
-  expected_output: >
-    Clear, broadly applicable notes suitable for efficient study and quick comprehension, 
-    including emotional tone analysis that helps users understand the presenter's approach.
-
-create_action_plan:
-  description: >
-    The title of the YouTube video is: {video_title}
-    The current date and time is: {current_datetime}
-
-    Based on the provided YouTube video transcription, you are tasked with creating a strategic action plan.
-    Here is the YouTube video transcription:
-    {transcript}
-
-    Generate concise and actionable advisor notes outlining:
-
-    - 3-5 straightforward recommendations
+    **Part 2: Strategic Action Plan**
+    Based on the insights and emotional tone from Part 1 (and any relevant context tag if available), create a concise, actionable plan featuring:
+    - 3–5 straightforward recommendations
     - Key resources needed (briefly stated)
     - Clearly defined anticipated outcomes
-    - Potential challenges accompanied by simple solutions
+    - Potential challenges accompanied by simple, practical solutions
 
-    Tailor your recommendations based on the emotional tone and context tag identified in previous tasks,
-    ensuring the action plan aligns with how the information was presented (tutorial-style steps for tutorials,
-    analytical responses for news content, etc.).
+    At the end of the action plan, provide a list of 3-5 resources that the reader can use to learn more about the topic.
+    These resources can be websites, books, courses, etc.
 
-    Each recommendation should be direct, practical, and easy to implement immediately.
-
-  expected_output: >
-    Direct, actionable advisor notes clearly outlining recommendations, resources, outcomes, and succinct solutions
-    to potential challenges, contextualized based on the content's tone and format.
-
-write_report:
-  description: >
-    The title of the YouTube video is: {video_title}
-    The current date and time is: {current_datetime}
-
-    Here is the YouTube video transcription:
-    {transcript}
-
-    Use the classification and context tag from the Classify Video task.
-    Use the layered summary from the Summarize Content task.
-    Use the analysis and emotional tone assessment from the Analyze Content task.
-    Use the context-aware action plan from the Create Action Plan task.
-    
-    Prepare a succinct, high-quality Markdown report (maximum 750 words) clearly summarizing:
-
-    - Classification and Context Tag
-    - Basic TL;DR (for quick scanning)
-    - Deep Dive Summary
-    - Key Points
-    - Concise Analysis Notes with Emotional Tone Assessment
-    - Direct Advisor Recommendations and Action Plan
-    - Potential Challenges and Solutions
-    - Current Trends and Insights
-    - Key Quotes
-    - Further Reading and Resources
-
-    For getting the current trends and insights, further reading and resources, use the Search tool
-
-    You must provide a suitable title for the report. It must not be like "Markdown Report" or "YouTube Analysis Report".
-    Prioritize clarity, readability, and brevity, eliminating redundancy to create superior quality, highly effective notes.
-    
-    Structure the report to allow users to quickly scan the basic information while having the option to expand sections
-    for deeper insights when needed.
+    Tailor your plan to reflect how the information was presented (e.g., tutorial style, news context, etc.), ensuring each recommendation is direct and immediately implementable.
 
   expected_output: >
-    A structured, contextually-layered Markdown report crafted with both basic and detailed information layers,
-    optimized for immediate understanding with options for deeper exploration based on user needs.
+    A single integrated response containing:
+    1) Clear, broadly applicable analysis notes suitable for quick comprehension, including an emotional tone assessment.
+    2) A concise strategic action plan with practical recommendations, essential resources, expected outcomes, and brief solutions to potential challenges—contextualized to match the video's tone and format.
+    3) A list of 3-5 resources that the reader can use to learn more about the topic. These resources can be websites, books, courses, etc.
 
 write_blog_post:
   description: >

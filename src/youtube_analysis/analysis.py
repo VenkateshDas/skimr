@@ -240,22 +240,12 @@ def run_analysis(youtube_url: str, progress_callback=None, status_callback=None,
                         logger.info(f"Output preview for {task_name}: {preview}")
                         
                         # Update progress based on task completion
-                        if task_name == "classify_video":
-                            if progress_callback:
-                                progress_callback(50)
-                            if status_callback:
-                                status_callback("Summarizing video content...")
-                        elif task_name == "summarize_content":
+                        if task_name == "classify_and_summarize_content":
                             if progress_callback:
                                 progress_callback(70)
                             if status_callback:
-                                status_callback("Analyzing video content...")
-                        elif task_name == "analyze_content":
-                            if progress_callback:
-                                progress_callback(85)
-                            if status_callback:
-                                status_callback("Creating action plan...")
-                        elif task_name == "create_action_plan":
+                                status_callback("Analyzing video content and creating action plan...")
+                        elif task_name == "analyze_and_plan_content":
                             if progress_callback:
                                 progress_callback(95)
                             if status_callback:
@@ -273,10 +263,8 @@ def run_analysis(youtube_url: str, progress_callback=None, status_callback=None,
                 
                 # Generate fallback task outputs
                 task_outputs = {
-                    "classify_video": "Technology",  # Default category
-                    "summarize_content": "Analysis results were not generated properly. Please try again with a different model or settings.",
-                    "analyze_content": "Unable to generate analysis. Please try again with cache disabled.",
-                    "create_action_plan": "Action plan could not be created. Please try again.",
+                    "classify_and_summarize_content": "Analysis results were not generated properly. Please try again with a different model or settings.",
+                    "analyze_and_plan_content": "Analysis and action plan could not be created. Please try again with cache disabled.",
                     "write_report": "Report generation failed. Please try again with cache disabled."
                 }
                 
@@ -306,9 +294,9 @@ def run_analysis(youtube_url: str, progress_callback=None, status_callback=None,
             # Extract category from classification output
             category = "Uncategorized"
             context_tag = "General"
-            if "classify_video" in task_outputs:
-                category = extract_category(task_outputs["classify_video"])
-                context_tag = extract_context_tag(task_outputs["classify_video"])
+            if "classify_and_summarize_content" in task_outputs:
+                category = extract_category(task_outputs["classify_and_summarize_content"])
+                context_tag = extract_context_tag(task_outputs["classify_and_summarize_content"])
             
             # Prepare results
             results = {
@@ -420,22 +408,12 @@ def run_direct_analysis(youtube_url: str, plain_transcript: str, progress_callba
                 task_outputs[task_name] = task.output.raw
                 
                 # Update progress based on task completion
-                if task_name == "classify_video":
-                    if progress_callback:
-                        progress_callback(50)
-                    if status_callback:
-                        status_callback("Summarizing video content...")
-                elif task_name == "summarize_content":
+                if task_name == "classify_and_summarize_content":
                     if progress_callback:
                         progress_callback(70)
                     if status_callback:
-                        status_callback("Analyzing video content...")
-                elif task_name == "analyze_content":
-                    if progress_callback:
-                        progress_callback(85)
-                    if status_callback:
-                        status_callback("Creating action plan...")
-                elif task_name == "create_action_plan":
+                        status_callback("Analyzing video content and creating action plan...")
+                elif task_name == "analyze_and_plan_content":
                     if progress_callback:
                         progress_callback(95)
                     if status_callback:
@@ -453,9 +431,9 @@ def run_direct_analysis(youtube_url: str, plain_transcript: str, progress_callba
         # Extract category from classification output
         category = "Uncategorized"
         context_tag = "General"
-        if "classify_video" in task_outputs:
-            category = extract_category(task_outputs["classify_video"])
-            context_tag = extract_context_tag(task_outputs["classify_video"])
+        if "classify_and_summarize_content" in task_outputs:
+            category = extract_category(task_outputs["classify_and_summarize_content"])
+            context_tag = extract_context_tag(task_outputs["classify_and_summarize_content"])
         
         # Prepare results
         results = {
@@ -478,6 +456,15 @@ def run_direct_analysis(youtube_url: str, plain_transcript: str, progress_callba
             cache_analysis(video_id, results_to_cache)
         except Exception as e:
             logger.warning(f"Error caching analysis results: {str(e)}")
+        
+        # If task outputs are not created properly, create default ones
+        if not task_outputs or len(task_outputs) == 0:
+            logger.warning("Direct analysis produced no task outputs. Creating defaults.")
+            task_outputs = {
+                "classify_and_summarize_content": "Direct analysis results were not generated properly. Please try again with different settings.",
+                "analyze_and_plan_content": "Analysis and action plan could not be created in direct analysis mode.",
+                "write_report": "Report generation failed in direct analysis mode."
+            }
         
         return results, None
         

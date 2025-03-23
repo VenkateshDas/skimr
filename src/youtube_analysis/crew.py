@@ -58,41 +58,17 @@ class YouTubeAnalysisCrew:
         )
     
     @task
-    def classify_video(self) -> Task:
+    def classify_and_summarize_content(self) -> Task:
         """
-        Creates a task to classify the YouTube video based on its transcript.
+        Creates a task to classify and summarize the YouTube video based on its transcript.
         
         Returns:
-            Task: A CrewAI task for classifying the video.
+            Task: A CrewAI task for classifying and summarizing the video.
         """
-        logger.info("Creating classify video task")
+        logger.info("Creating classify and summarize content task")
         return Task(
-            config=self.tasks_config['classify_video'],
+            config=self.tasks_config['classify_and_summarize_content'],
             agent=self.classifier_agent(),
-            async_execution=True
-        )
-    
-    @agent
-    def summarizer_agent(self) -> Agent:
-        logger.debug("Creating summarizer agent")
-        return Agent(
-            config=self.agents_config['summarizer_agent'],
-            verbose=True,
-            llm=self.llm
-        )
-    
-    @task
-    def summarize_content(self) -> Task:
-        """
-        Creates a task to summarize the video content based on its transcription.
-        
-        Returns:
-            Task: A CrewAI task for summarizing the content.
-        """
-        logger.info("Creating summarize content task")
-        return Task(
-            config=self.tasks_config['summarize_content'],
-            agent=self.summarizer_agent(),
             async_execution=True
         )
     
@@ -106,68 +82,18 @@ class YouTubeAnalysisCrew:
         )
     
     @task
-    def analyze_content(self) -> Task:
+    def analyze_and_plan_content(self) -> Task:
         """
-        Creates a task to analyze the video content based on its transcription and summary.
+        Creates a task to analyze the video content and create an action plan based on its transcription and summary.
         
         Returns:
-            Task: A CrewAI task for analyzing the content.
+            Task: A CrewAI task for analyzing the content and creating an action plan.
         """
-        logger.info("Creating analyze content task")
+        logger.info("Creating analyze and plan content task")
         return Task(
-            config=self.tasks_config['analyze_content'],
+            config=self.tasks_config['analyze_and_plan_content'],
             agent=self.analyzer_agent(),
             async_execution=True
-        )
-    
-    @agent
-    def advisor_agent(self) -> Agent:
-        logger.debug("Creating advisor agent")
-        return Agent(
-            config=self.agents_config['advisor_agent'],
-            verbose=True,
-            llm=self.llm,
-            tools=[SearchTool()]
-        )
-    
-    @task
-    def create_action_plan(self) -> Task:
-        """
-        Creates a task to create an action plan based on the video content analysis.
-        
-        Returns:
-            Task: A CrewAI task for creating an action plan.
-        """
-        logger.info("Creating action plan task")
-        return Task(
-            config=self.tasks_config['create_action_plan'],
-            agent=self.advisor_agent(),
-            async_execution=True
-        )
-    
-    @agent
-    def report_writer_agent(self) -> Agent:
-        logger.debug("Creating report writer agent")
-        return Agent(
-            config=self.agents_config['report_writer_agent'],
-            verbose=True,
-            llm=self.llm,
-            tools=[SearchTool()]
-        )
-    
-    @task
-    def write_report(self) -> Task:
-        """
-        Creates a task to write a comprehensive report based on all previous analyses.
-        
-        Returns:
-            Task: A CrewAI task for writing a report.
-        """
-        logger.info("Creating write report task")
-        return Task(
-            config=self.tasks_config['write_report'],
-            agent=self.report_writer_agent(),
-            context=[self.classify_video(), self.summarize_content(), self.analyze_content(), self.create_action_plan()]
         )
     
     @agent
@@ -192,7 +118,7 @@ class YouTubeAnalysisCrew:
         return Task(
             config=self.tasks_config['write_blog_post'],
             agent=self.blog_writer_agent(),
-            context=[self.write_report()]
+            context=[self.classify_and_summarize_content(), self.analyze_and_plan_content()]
         )
     
     @agent
@@ -217,7 +143,7 @@ class YouTubeAnalysisCrew:
         return Task(
             config=self.tasks_config['write_linkedin_post'],
             agent=self.linkedin_post_writer_agent(),
-            context=[self.write_report()]
+            context=[self.classify_and_summarize_content(), self.analyze_and_plan_content()]
         )
     
     @agent
@@ -242,7 +168,7 @@ class YouTubeAnalysisCrew:
         return Task(
             config=self.tasks_config['write_tweet'],
             agent=self.tweet_writer_agent(),
-            context=[self.write_report()]
+            context=[self.classify_and_summarize_content(), self.analyze_and_plan_content()]
         )
     
     @crew
@@ -261,11 +187,8 @@ class YouTubeAnalysisCrew:
             # Create tasks with explicit debugging
             tasks = []
             task_methods = [
-                self.classify_video, 
-                self.summarize_content, 
-                self.analyze_content, 
-                self.create_action_plan, 
-                self.write_report,
+                self.classify_and_summarize_content, 
+                self.analyze_and_plan_content,
                 self.write_blog_post,
                 self.write_linkedin_post,
                 self.write_tweet

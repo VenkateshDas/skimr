@@ -1692,16 +1692,23 @@ def display_analysis_results(results: Dict[str, Any]):
     
     with analysis_container:
         # Analysis tabs with Full Report as the first tab
-        tabs = st.tabs(["📄 Full Report", "✨ Summary", "🔍 Analysis", "📝 Action Plan", "📝 Blog Post", "💼 LinkedIn Post", "🐦 X Tweet", "🎙️ Transcript", "🎬 Video Highlights"])
+        tabs = st.tabs(["📄 Full Report", "📝 Blog Post", "💼 LinkedIn Post", "🐦 X Tweet", "🎙️ Transcript", "🎬 Video Highlights"])
         
         task_outputs = results.get("task_outputs", {})
         
         # Display content in tabs
         with tabs[0]:
-            if "write_report" in task_outputs:
-                # Get the report content
-                report_content = task_outputs["write_report"]
-                
+            if "classify_and_summarize_content" in task_outputs and "analyze_and_plan_content" in task_outputs:
+                # Get the report content by combining the content from classify_and_summarize_content, analyze_and_plan_content
+                report_content = f"""
+## Classification and Summary
+
+{task_outputs["classify_and_summarize_content"]}
+
+## Analysis and Action Plan
+
+{task_outputs["analyze_and_plan_content"]}
+                """
                 # Create an expander for copying the report
                 with st.expander("Copy Full Report"):
                     st.code(report_content, language="markdown")
@@ -1713,52 +1720,9 @@ def display_analysis_results(results: Dict[str, Any]):
             else:
                 st.info("Full report not available.")
                 
-        with tabs[1]:
-            if "summarize_content" in task_outputs:
-                # Get the summary content
-                summary_content = task_outputs["summarize_content"]
-                
-                # Create an expander for copying the summary
-                with st.expander("Copy Summary"):
-                    st.code(summary_content, language="markdown")
-                
-                # Display using Streamlit's native markdown support
-                st.markdown(summary_content)
-            else:
-                st.info("Summary not available.")
-                
-        with tabs[2]:
-            if "analyze_content" in task_outputs:
-                # Get the analysis content
-                analysis_content = task_outputs["analyze_content"]
-                
-                # Create an expander for copying the analysis
-                with st.expander("Copy Analysis"):
-                    st.code(analysis_content, language="markdown")
-                
-                # Display using Streamlit's native markdown support  
-                st.markdown(analysis_content)
-            else:
-                st.info("Analysis not available.")
-        
-        with tabs[3]:
-            if "create_action_plan" in task_outputs:
-                # Get the action plan content
-                action_plan_content = task_outputs["create_action_plan"]
-                
-                # Create an expander for copying the action plan
-                with st.expander("Copy Action Plan"):
-                    st.code(action_plan_content, language="markdown")
-                
-                # Display using Streamlit's native markdown support
-                # if the action plan content is within fenced code blocks, then remove the top and bottom fences
-                action_plan_content = clean_markdown_fences(action_plan_content)
-                st.markdown(action_plan_content)
-            else:
-                st.info("Action plan not available.")
-        
+    
         # Blog Post Tab
-        with tabs[4]:
+        with tabs[1]:
             if "write_blog_post" in task_outputs:
                 # Use native Streamlit markdown for better rendering
                 st.markdown("### Blog Post")
@@ -1778,7 +1742,7 @@ def display_analysis_results(results: Dict[str, Any]):
                 st.info("Blog post not available.")
         
         # LinkedIn Post Tab
-        with tabs[5]:
+        with tabs[2]:
             if "write_linkedin_post" in task_outputs:
                 # Display LinkedIn header
                 st.markdown("""
@@ -1811,7 +1775,7 @@ def display_analysis_results(results: Dict[str, Any]):
                 st.info("LinkedIn post not available.")
         
         # X/Twitter Post Tab
-        with tabs[6]:
+        with tabs[3]:
             if "write_tweet" in task_outputs:
                 # Display X/Twitter header
                 st.markdown("""
@@ -1844,7 +1808,7 @@ def display_analysis_results(results: Dict[str, Any]):
             else:
                 st.info("X post not available.")
         
-        with tabs[7]:
+        with tabs[4]:
             st.markdown("<h3 style='margin-bottom: 1rem;'>Video Transcript</h3>", unsafe_allow_html=True)
             
             # Add toggles for timestamps
@@ -1900,7 +1864,7 @@ def display_analysis_results(results: Dict[str, Any]):
                 if "transcript" in results:
                     st.text_area("Transcript", results["transcript"], height=400, label_visibility="collapsed")
         
-        with tabs[8]:
+        with tabs[5]:
             try:
                 if st.session_state.get("highlights_video_path") and st.session_state.get("highlights_segments"):
                     # Display the highlights video that was already generated
@@ -2003,6 +1967,7 @@ def display_analysis_results(results: Dict[str, Any]):
                 
                 with col3:
                     st.metric("Total Tokens", token_usage.get("total_tokens", "N/A"), delta=None, delta_color="normal")
+                
             else:
                 # If token_usage is a string, try to parse it
                 try:
@@ -2029,12 +1994,14 @@ def display_analysis_results(results: Dict[str, Any]):
                         with col3:
                             total_tokens = int(total_match.group(1)) if total_match else "N/A"
                             st.metric("Total Tokens", total_tokens, delta=None, delta_color="normal")
+
                     else:
                         # Just display the raw token information
                         st.text(f"Token Usage: {token_usage}")
                 except Exception as e:
                     # If any error occurs, just display the raw token information
                     st.text(f"Token Usage: {token_usage}")
+
 
 # Add this function to convert transcript list to text format
 def convert_transcript_list_to_text(transcript_list):
@@ -2284,7 +2251,7 @@ def main():
         st.markdown("<h3 style='margin-bottom: 0.5rem;'>AI Model</h3>", unsafe_allow_html=True)
         model = st.selectbox(
             label="AI Model",
-            options=["gpt-4o-mini", "gemini-2.0-flash", "claude-3-7-sonnet-20250219"],
+            options=["gpt-4o-mini", "gemini-2.0-flash"],
             index=0,
             label_visibility="collapsed"
         )
@@ -2604,7 +2571,7 @@ def main():
                                     try:
                                         analysis_result = run_analysis(
                                             url,  
-                                            update_progress, 
+                                            update_progress,
                                             update_status,
                                             use_cache=use_cache  # Use the captured value from outside
                                         )
@@ -2929,9 +2896,8 @@ def main():
                 logger.info("Attempting to create fallback task outputs")
                 # Create minimal task outputs to display something
                 results["task_outputs"] = {
-                    "summarize_content": "Analysis results were not properly generated. Please try again with a different model or settings.",
-                    "analyze_content": "Unable to generate detailed analysis. Please try with cache disabled.",
-                    "create_action_plan": "Action plan could not be created. Please try again.",
+                    "classify_and_summarize_content": "Classification and summary results were not properly generated. Please try again with a different model or settings.",
+                    "analyze_and_plan_content": "Analysis and action plan could not be created. Please try again with cache disabled.",
                     "write_report": "Report generation failed."
                 }
                 
