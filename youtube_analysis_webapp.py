@@ -43,7 +43,8 @@ from src.youtube_analysis.utils.youtube_utils import (
 )
 from src.youtube_analysis.utils.logging import get_logger
 from src.youtube_analysis.auth import init_auth_state, display_auth_ui, get_current_user, logout, require_auth
-from src.youtube_analysis.ui import load_css, setup_sidebar, create_welcome_message, setup_user_menu
+from src.youtube_analysis.ui import load_css, setup_sidebar, create_welcome_message, setup_user_menu, display_video_highlights
+from src.youtube_analysis.analysis import generate_video_highlights
 
 # LangGraph and LangChain imports for chat functionality
 from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
@@ -172,7 +173,7 @@ def process_transcript_async(url: str, use_cache: bool = True) -> Tuple[Optional
                 try:
                     # Get transcript list to reconstruct the timestamped version
                     from youtube_transcript_api import YouTubeTranscriptApi
-                    transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+                    transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=["en", "de", "ta"])
                     
                     # Format transcript with timestamps
                     timestamped_transcript = ""
@@ -193,7 +194,7 @@ def process_transcript_async(url: str, use_cache: bool = True) -> Tuple[Optional
         try:
             # Use the YouTubeTranscriptApi directly to avoid issues with get_transcript function
             from youtube_transcript_api import YouTubeTranscriptApi
-            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'es', 'fr', 'de', 'it', 'ja', 'ko', 'pt', 'ru', 'zh', 'ta'])
+            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en','de','ta'])
             
             if not transcript_list:
                 logger.error(f"No transcript available for video ID: {video_id}")
@@ -1691,265 +1692,9 @@ def display_analysis_results(results: Dict[str, Any]):
     
     with analysis_container:
         # Analysis tabs with Full Report as the first tab
-        tabs = st.tabs(["📄 Full Report", "✨ Summary", "🔍 Analysis", "📝 Action Plan", "📝 Blog Post", "💼 LinkedIn Post", "🐦 X Tweet", "🎙️ Transcript"])
+        tabs = st.tabs(["📄 Full Report", "✨ Summary", "🔍 Analysis", "📝 Action Plan", "📝 Blog Post", "💼 LinkedIn Post", "🐦 X Tweet", "🎙️ Transcript", "🎬 Video Highlights"])
         
         task_outputs = results.get("task_outputs", {})
-        
-        # Add export options at the top
-        export_col1, export_col2 = st.columns([3, 1])
-        with export_col2:
-            if st.button("Export Analysis as PDF", type="primary"):
-                st.info("Generating PDF... This will download when ready.")
-                
-                # Get video title for the filename
-                video_title = results.get("title", "youtube_video")
-                # Create a safe filename by removing invalid characters
-                safe_title = re.sub(r'[\\/*?:"<>|]', "", video_title)
-                safe_title = safe_title.replace(' ', '_')
-                pdf_filename = f"{safe_title}_youtube_analysis.pdf"
-                
-                logger.info(f"Starting PDF export for video: {video_title}")
-                logger.info(f"PDF filename will be: {pdf_filename}")
-                
-                # Collect all content
-                pdf_content = ""
-                if "write_report" in task_outputs:
-                    pdf_content += task_outputs["write_report"] + "\n\n"
-                if "summarize_content" in task_outputs:
-                    pdf_content += "# Summary\n\n" + task_outputs["summarize_content"] + "\n\n"
-                if "analyze_content" in task_outputs:
-                    pdf_content += "# Analysis\n\n" + task_outputs["analyze_content"] + "\n\n"
-                if "create_action_plan" in task_outputs:
-                    pdf_content += "# Action Plan\n\n" + task_outputs["create_action_plan"] + "\n\n"
-                if "write_blog_post" in task_outputs:
-                    pdf_content += "# Blog Post\n\n" + task_outputs["write_blog_post"] + "\n\n"
-                
-                logger.info(f"Collected content for PDF, total length: {len(pdf_content)} characters")
-                
-                # Convert markdown to PDF using reportlab
-                try:
-                    # First convert markdown to HTML for better parsing
-                    logger.info("Converting markdown to HTML")
-                    html_content = markdown.markdown(pdf_content, extensions=['extra'])
-                    logger.info(f"HTML conversion complete, length: {len(html_content)} characters")
-                    
-                    # Custom HTML parser to convert HTML to ReportLab flowables
-                    class HTMLtoReportLabParser(HTMLParser):
-                        def __init__(self):
-                            super().__init__()
-                            self.styles = getSampleStyleSheet()
-                            self.flowables = []
-                            self.list_items = []
-                            self.in_list = False
-                            self.in_bold = False
-                            self.in_italic = False
-                            self.in_paragraph = False
-                            
-                            # Create custom styles
-                            self.styles.add(ParagraphStyle(
-                                name='CustomBody',
-                                parent=self.styles['Normal'],
-                                spaceBefore=6,
-                                spaceAfter=6
-                            ))
-                            
-                            self.styles.add(ParagraphStyle(
-                                name='CustomH1',
-                                parent=self.styles['Heading1'],
-                                fontSize=16,
-                                spaceBefore=12,
-                                spaceAfter=6,
-                                textColor=colors.darkblue
-                            ))
-                            
-                            self.styles.add(ParagraphStyle(
-                                name='CustomH2',
-                                parent=self.styles['Heading2'],
-                                fontSize=14,
-                                spaceBefore=10,
-                                spaceAfter=6,
-                                textColor=colors.darkblue
-                            ))
-                            
-                            self.styles.add(ParagraphStyle(
-                                name='CustomH3',
-                                parent=self.styles['Heading3'],
-                                fontSize=12,
-                                spaceBefore=8,
-                                spaceAfter=4,
-                                textColor=colors.darkblue
-                            ))
-                            
-                            self.styles.add(ParagraphStyle(
-                                name='CustomListItem',
-                                parent=self.styles['Normal'],
-                                leftIndent=20,
-                                spaceBefore=2,
-                                spaceAfter=2
-                            ))
-                            
-                            self.current_text = ""
-                            
-                        def handle_starttag(self, tag, attrs):
-                            if tag == 'h1':
-                                self.flush_text()
-                                self.current_style = 'CustomH1'
-                            elif tag == 'h2':
-                                self.flush_text()
-                                self.current_style = 'CustomH2'
-                            elif tag == 'h3':
-                                self.flush_text()
-                                self.current_style = 'CustomH3'
-                            elif tag == 'p':
-                                self.flush_text()
-                                self.in_paragraph = True
-                                self.current_style = 'CustomBody'
-                            elif tag == 'strong' or tag == 'b':
-                                self.in_bold = True
-                            elif tag == 'em' or tag == 'i':
-                                self.in_italic = True
-                            elif tag == 'ul' or tag == 'ol':
-                                self.in_list = True
-                                self.list_items = []
-                            elif tag == 'li' and self.in_list:
-                                self.flush_text()
-                                self.current_style = 'CustomListItem'
-                                
-                        def handle_endtag(self, tag):
-                            if tag in ('h1', 'h2', 'h3', 'p'):
-                                self.flush_text()
-                            elif tag == 'strong' or tag == 'b':
-                                self.in_bold = False
-                            elif tag == 'em' or tag == 'i':
-                                self.in_italic = False
-                            elif tag == 'li':
-                                if self.current_text.strip():
-                                    self.list_items.append(self.current_text.strip())
-                                    self.current_text = ""
-                            elif tag in ('ul', 'ol'):
-                                if self.list_items:
-                                    # Create a list flowable
-                                    bullet_list = []
-                                    for item in self.list_items:
-                                        bullet_list.append(ListItem(
-                                            Paragraph(item, self.styles['CustomListItem']),
-                                            leftIndent=20
-                                        ))
-                                    self.flowables.append(ListFlowable(
-                                        bullet_list,
-                                        bulletType='bullet',
-                                        start=None,
-                                        bulletFontSize=8,
-                                        leftIndent=10,
-                                        spaceBefore=6,
-                                        spaceAfter=6
-                                    ))
-                                    self.list_items = []
-                                    self.in_list = False
-                                    
-                        def handle_data(self, data):
-                            text = data.strip()
-                            if text:
-                                formatted_text = text
-                                if self.in_bold:
-                                    formatted_text = f"<b>{formatted_text}</b>"
-                                if self.in_italic:
-                                    formatted_text = f"<i>{formatted_text}</i>"
-                                self.current_text += formatted_text + " "
-                                
-                        def flush_text(self):
-                            if self.current_text.strip():
-                                if self.in_list:
-                                    self.list_items.append(self.current_text.strip())
-                                else:
-                                    style = getattr(self, 'current_style', 'CustomBody')
-                                    self.flowables.append(Paragraph(self.current_text.strip(), self.styles[style]))
-                                    self.flowables.append(Spacer(1, 2))
-                                self.current_text = ""
-                                
-                        def get_flowables(self):
-                            self.flush_text()
-                            return self.flowables
-                    
-                    # Parse HTML and get flowables
-                    logger.info("Parsing HTML to ReportLab flowables")
-                    parser = HTMLtoReportLabParser()
-                    parser.feed(html_content)
-                    flowables = parser.get_flowables()
-                    logger.info(f"Generated {len(flowables)} flowable elements for PDF")
-                    
-                    # Add title at the beginning
-                    title_style = ParagraphStyle(
-                        name='Title',
-                        parent=getSampleStyleSheet()['Title'],
-                        fontSize=18,
-                        alignment=TA_LEFT,
-                        textColor=colors.darkblue,
-                        spaceBefore=12,
-                        spaceAfter=24
-                    )
-                    title_paragraph = Paragraph(f"YouTube Analysis: {video_title}", title_style)
-                    flowables.insert(0, title_paragraph)
-                    flowables.insert(1, Spacer(1, 12))
-                    
-                    # Create PDF
-                    logger.info("Building PDF document")
-                    buffer = io.BytesIO()
-                    doc = SimpleDocTemplate(buffer, pagesize=letter, title=f"YouTube Analysis - {video_title}")
-                    doc.build(flowables)
-                    pdf_data = buffer.getvalue()
-                    buffer.close()
-                    logger.info(f"PDF generated successfully, size: {len(pdf_data)} bytes")
-                    
-                    # Provide download link
-                    b64 = base64.b64encode(pdf_data).decode()
-                    href = f'<a href="data:application/pdf;base64,{b64}" download="{pdf_filename}">Download PDF</a>'
-                    st.markdown(href, unsafe_allow_html=True)
-                    logger.info("PDF download link created and displayed to user")
-                except Exception as e:
-                    logger.error(f"PDF export failed with error: {str(e)}", exc_info=True)
-                    st.error(f"PDF export failed: {str(e)}")
-                    # Fallback to simple method if above fails
-                    try:
-                        # Simple markdown to PDF conversion as fallback
-                        logger.info("Attempting fallback PDF generation method")
-                        buffer = io.BytesIO()
-                        doc = SimpleDocTemplate(buffer, pagesize=letter)
-                        styles = getSampleStyleSheet()
-                        
-                        flowables = []
-                        flowables.append(Paragraph(f"YouTube Analysis: {video_title}", styles['Title']))
-                        flowables.append(Spacer(1, 12))
-                        
-                        lines_processed = 0
-                        for line in pdf_content.split('\n'):
-                            if not line.strip():
-                                flowables.append(Spacer(1, 6))
-                            elif line.startswith('# '):
-                                flowables.append(Paragraph(line[2:], styles['Heading1']))
-                            elif line.startswith('## '):
-                                flowables.append(Paragraph(line[3:], styles['Heading2']))
-                            elif line.startswith('### '):
-                                flowables.append(Paragraph(line[4:], styles['Heading3']))
-                            elif line.startswith('- '):
-                                flowables.append(Paragraph('• ' + line[2:], styles['Normal']))
-                            else:
-                                flowables.append(Paragraph(line, styles['Normal']))
-                            lines_processed += 1
-                        
-                        logger.info(f"Fallback: processed {lines_processed} lines, creating {len(flowables)} flowables")
-                        doc.build(flowables)
-                        pdf_data = buffer.getvalue()
-                        buffer.close()
-                        logger.info(f"Fallback PDF generated successfully, size: {len(pdf_data)} bytes")
-                        
-                        b64 = base64.b64encode(pdf_data).decode()
-                        href = f'<a href="data:application/pdf;base64,{b64}" download="{pdf_filename}">Download PDF (Simple Format)</a>'
-                        st.markdown(href, unsafe_allow_html=True)
-                        logger.info("Fallback PDF download link created and displayed to user")
-                    except Exception as fallback_error:
-                        logger.error(f"Fallback PDF export also failed: {str(fallback_error)}", exc_info=True)
-                        st.error(f"Fallback PDF export also failed: {str(fallback_error)}")
         
         # Display content in tabs
         with tabs[0]:
@@ -2154,6 +1899,91 @@ def display_analysis_results(results: Dict[str, Any]):
                 # Show regular transcript
                 if "transcript" in results:
                     st.text_area("Transcript", results["transcript"], height=400, label_visibility="collapsed")
+        
+        with tabs[8]:
+            try:
+                if st.session_state.get("highlights_video_path") and st.session_state.get("highlights_segments"):
+                    # Display the highlights video that was already generated
+                    display_video_highlights(
+                        st.session_state.highlights_video_path,
+                        st.session_state.highlights_segments
+                    )
+                else:
+                    # Show button to generate highlights
+                    st.write("### Video Highlights")
+                    st.write("Generate a highlights video that captures the key moments of this content.")
+                    
+                    if st.button("🎬 Generate Video Highlights", key="generate_highlights"):
+                        with st.spinner("Generating video highlights..."):
+                            # Progress tracking
+                            progress_placeholder = st.empty()
+                            status_placeholder = st.empty()
+                            progress_bar = progress_placeholder.progress(0)
+                            
+                            # Define progress update functions
+                            def update_progress(value):
+                                try:
+                                    progress_bar.progress(value)
+                                except Exception:
+                                    pass
+                            
+                            def update_status(message):
+                                try:
+                                    status_placeholder.info(message)
+                                except Exception:
+                                    pass
+                            
+                            # Get the YouTube URL from results
+                            youtube_url = results.get("youtube_url", "")
+                            if not youtube_url:
+                                st.error("YouTube URL not found in results.")
+                                return
+                            
+                            # Generate highlights
+                            video_path, highlights_segments, error = generate_video_highlights(
+                                youtube_url=youtube_url,
+                                max_highlights=5,
+                                progress_callback=update_progress,
+                                status_callback=update_status
+                            )
+                            
+                            if error:
+                                st.error(f"Error generating highlights: {error}")
+                                if "download" in error.lower() or "HTTP Error" in error:
+                                    st.info("""
+                                    ℹ️ **Video Download Issue**
+                                    
+                                    YouTube frequently updates their API which can cause download issues. You can try:
+                                    1. Refresh the page and try again
+                                    2. Try a different video
+                                    3. Check if the video has any restrictions (age-restricted, private, etc.)
+                                    
+                                    We've implemented several fallback methods, but some videos may still be unavailable.
+                                    """)
+                            elif video_path and highlights_segments:
+                                # Store in session state
+                                st.session_state.highlights_video_path = video_path
+                                st.session_state.highlights_segments = highlights_segments
+                                
+                                # Display the highlights
+                                display_video_highlights(video_path, highlights_segments)
+                            else:
+                                st.error("Failed to generate video highlights. Please try again.")
+                    
+                    # Show information about the highlights feature
+                    st.markdown("---")
+                    st.markdown("#### What are Video Highlights?")
+                    st.markdown("""
+                    The video highlights feature uses AI to:
+                    1. Identify the most important moments in the video
+                    2. Extract these segments from the original video
+                    3. Combine them into a concise highlights video
+                    
+                    This allows you to quickly get the main points without watching the entire video.
+                    """)
+            except Exception as e:
+                st.error(f"Error displaying highlights tab: {str(e)}")
+                logger.error(f"Error in highlights tab: {str(e)}", exc_info=True)
     
     # Display token usage if available
     if token_usage:
@@ -2526,6 +2356,11 @@ def main():
                 st.session_state.timestamped_transcript = None
                 st.session_state.transcript_list = None
                 st.session_state.video_id = None
+                # Clear highlights-related session state
+                if "highlights_video_path" in st.session_state:
+                    del st.session_state.highlights_video_path
+                if "highlights_segments" in st.session_state:
+                    del st.session_state.highlights_segments
                 st.rerun()
                 
             # Clear cache button (only shown if a video has been analyzed)
@@ -2534,15 +2369,25 @@ def main():
                     video_id = st.session_state.video_id
                     # Import clear_analysis_cache from the proper module
                     from src.youtube_analysis.utils.cache_utils import clear_analysis_cache as clear_cache_function
-                    if clear_cache_function(video_id):
+                    from src.youtube_analysis.utils.video_highlights import clear_highlights_cache
+                    
+                    analysis_cleared = clear_cache_function(video_id)
+                    highlights_cleared = clear_highlights_cache(video_id)
+                    
+                    if analysis_cleared or highlights_cleared:
                         st.success(f"Cache cleared for video {video_id}")
                         # Reset analysis state to force a fresh analysis
                         st.session_state.analysis_complete = False
                         st.session_state.analysis_results = None
                         st.session_state.video_id = None
+                        # Clear highlights-related session state
+                        if "highlights_video_path" in st.session_state:
+                            del st.session_state.highlights_video_path
+                        if "highlights_segments" in st.session_state:
+                            del st.session_state.highlights_segments
                         st.rerun()
                     else:
-                        st.info("No cached analysis found for this video")
+                        st.info("No cached data found for this video")
         
         # Display version
         st.markdown(f"<div style='text-align: center; margin-top: 2rem; opacity: 0.7;'>v{VERSION}</div>", unsafe_allow_html=True)
@@ -2637,6 +2482,12 @@ def main():
                         st.session_state.chat_enabled = False
                         st.session_state.chat_messages = []
                         st.session_state.chat_details = None
+                        
+                        # Clear highlights-related session state
+                        if "highlights_video_path" in st.session_state:
+                            del st.session_state.highlights_video_path
+                        if "highlights_segments" in st.session_state:
+                            del st.session_state.highlights_segments
                         
                         # Store the analysis start time
                         st.session_state.analysis_start_time = datetime.now()

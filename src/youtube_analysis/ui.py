@@ -2,7 +2,7 @@
 
 import os
 import streamlit as st
-from typing import Optional, Any
+from typing import Optional, Any, List, Dict
 
 def get_category_class(category: str) -> str:
     """
@@ -152,4 +152,39 @@ def create_welcome_message(video_title: Optional[str] = None, has_timestamps: bo
             st.info("This video has timestamps available. You can ask questions about specific parts of the video!")
     else:
         st.markdown("### Welcome to YouTube Video Analyzer!")
-        st.write("Enter a YouTube URL to get started.") 
+        st.write("Enter a YouTube URL to get started.")
+
+def display_video_highlights(video_path: str, highlights: List[Dict[str, Any]]):
+    """
+    Display video highlights in the UI.
+    
+    Args:
+        video_path: Path to the highlights video
+        highlights: List of highlight segments with descriptions
+    """
+    st.subheader("📽️ Video Highlights")
+    
+    # Display the video
+    video_file = open(video_path, 'rb')
+    video_bytes = video_file.read()
+    st.video(video_bytes)
+    
+    # Display highlights information
+    st.write("### Key Moments")
+    
+    for i, highlight in enumerate(highlights, 1):
+        start_time = int(highlight.get("start_time", 0))
+        end_time = int(highlight.get("end_time", 0))
+        
+        # Format times as MM:SS
+        start_formatted = f"{start_time // 60}:{start_time % 60:02d}"
+        end_formatted = f"{end_time // 60}:{end_time % 60:02d}"
+        
+        # Create expander for each highlight
+        with st.expander(f"Highlight {i}: [{start_formatted} - {end_formatted}]"):
+            st.markdown(f"**Description:** {highlight.get('description', 'No description available')}")
+            st.markdown(f"**Timestamp:** {start_formatted} - {end_formatted}")
+            
+            # Add a divider between highlights
+            if i < len(highlights):
+                st.divider() 

@@ -188,4 +188,68 @@ If the chat interface shows "Chat Unavailable," check that your OpenAI API key i
 
 ## License
 
-MIT 
+MIT
+
+## Docker Deployment
+
+This application can be easily deployed using Docker, which ensures consistent environments and simplifies the setup process.
+
+### Prerequisites
+
+- [Docker](https://docs.docker.com/get-docker/)
+- [Docker Compose](https://docs.docker.com/compose/install/)
+
+### Quick Start
+
+1. Clone the repository:
+   ```bash
+   git clone <repository-url>
+   cd youtube-video-analyzer
+   ```
+
+2. Create an environment file:
+   ```bash
+   cp .env.example .env
+   ```
+
+3. Edit the `.env` file with your API keys and configuration.
+
+4. Deploy the application:
+   ```bash
+   chmod +x deploy.sh
+   ./deploy.sh
+   ```
+
+5. Access the application at http://localhost:8501
+
+### Development Mode
+
+To run the application in development mode with live logs:
+
+```bash
+chmod +x dev.sh
+./dev.sh
+```
+
+### Docker Image Details
+
+The application uses a multi-stage build process to keep the Docker image slim:
+- Base image: Python 3.10 slim
+- Virtual environment for dependency isolation
+- Persistent volumes for database and output files
+- Proper handling of environment variables
+
+### Volume Mounts
+
+- `./output:/app/output`: Stores generated analysis results
+- `./db:/app/db`: Stores database files
+- `./.env:/app/.env`: Mounts your environment configuration
+
+### Customizing the Deployment
+
+You can customize the deployment by editing the `docker-compose.yml` file. For example, to change the port mapping:
+
+```yaml
+ports:
+  - "8080:8501"  # Map container port 8501 to host port 8080
+``` 

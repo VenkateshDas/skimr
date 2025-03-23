@@ -2,12 +2,14 @@
 
 import re
 import copy
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 from datetime import datetime
+import os
 
 from .utils.logging import get_logger
 from .utils.youtube_utils import extract_video_id, get_transcript, get_video_info
 from .utils.cache_utils import get_cached_analysis, cache_analysis
+from .utils.video_highlights import generate_highlights_video, get_cached_highlights_video, cache_highlights_video
 from .crew import YouTubeAnalysisCrew
 from .transcript import get_transcript_with_timestamps
 from .chat import setup_chat_for_video
@@ -185,14 +187,8 @@ def run_analysis(youtube_url: str, progress_callback=None, status_callback=None,
             status_callback("Chat functionality enabled!")
         
         # Create and run the crew
-        import os
-        
-        # Get model and temperature from environment variables
-        model = os.environ.get("LLM_MODEL", "gpt-4o-mini")
-        temperature = float(os.environ.get("LLM_TEMPERATURE", "0.2"))
-        
-        logger.info(f"Creating YouTubeAnalysisCrew with model={model}, temperature={temperature}")
-        crew_instance = YouTubeAnalysisCrew(model_name=model, temperature=temperature)
+        logger.info(f"Creating YouTubeAnalysisCrew")
+        crew_instance = YouTubeAnalysisCrew()
         
         try:
             logger.info("Setting up crew instance")
@@ -209,8 +205,12 @@ def run_analysis(youtube_url: str, progress_callback=None, status_callback=None,
             if status_callback:
                 status_callback("Analyzing video content...")
             
+            # Get current date and time
+            current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            video_title = get_video_info(youtube_url)["title"]
+            
             # Start the crew execution
-            inputs = {"youtube_url": youtube_url, "transcript": transcript}
+            inputs = {"youtube_url": youtube_url, "transcript": transcript, "current_datetime": current_datetime, "video_title": video_title}
             logger.info(f"Starting crew execution with inputs: youtube_url={youtube_url}, transcript length={len(transcript) if transcript else 0}")
             
             # Execute with additional error handling
@@ -403,9 +403,13 @@ def run_direct_analysis(youtube_url: str, plain_transcript: str, progress_callba
         
         crew_instance = YouTubeAnalysisCrew(model_name=model, temperature=temperature)
         crew = crew_instance.crew()
+
+        # Get current date and time
+        current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        video_title = video_info["title"]
         
         # Start the crew execution
-        inputs = {"youtube_url": youtube_url, "transcript": plain_transcript}
+        inputs = {"youtube_url": youtube_url, "transcript": plain_transcript, "current_datetime": current_datetime, "video_title": video_title}
         crew_output = crew.kickoff(inputs=inputs)
         
         # Extract task outputs
@@ -479,4 +483,118 @@ def run_direct_analysis(youtube_url: str, plain_transcript: str, progress_callba
         
     except Exception as e:
         logger.error(f"Error in direct analysis: {str(e)}", exc_info=True)
-        return None, str(e) 
+        return None, str(e)
+
+def generate_video_highlights(youtube_url: str, max_highlights: int = 5, progress_callback=None, status_callback=None) -> Tuple[Optional[str], Optional[List[Dict[str, Any]]], Optional[str]]:
+    """
+    Generate video highlights from a YouTube video.
+    
+    Args:
+        youtube_url: The URL of the YouTube video
+        max_highlights: Maximum number of highlights to extract
+        progress_callback: Optional callback function to update progress (0-100)
+        status_callback: Optional callback function to update status messages
+        
+    Returns:
+        A tuple containing:
+        - Path to the highlights video or None if failed
+        - List of highlight segments used or None if failed
+        - Error message or None if successful
+    """
+    try:
+        # Extract video ID
+        video_id = extract_video_id(youtube_url)
+        if not video_id:
+            error_msg = f"Invalid YouTube URL: {youtube_url}"
+            logger.error(error_msg)
+            return None, None, error_msg
+        
+        if status_callback:
+            status_callback("Checking for cached highlights video...")
+        
+        # Check if we have a cached highlights video
+        cached_highlights = get_cached_highlights_video(video_id)
+        if cached_highlights:
+            logger.info(f"Using cached highlights video for {video_id}")
+            
+            # Verify the cached video path still exists
+            video_path = cached_highlights.get("video_path")
+            if video_path and not os.path.exists(video_path):
+                logger.warning(f"Cached video path {video_path} no longer exists, generating a new one")
+            else:
+                if progress_callback:
+                    progress_callback(100)
+                    
+                if status_callback:
+                    status_callback("Using cached highlights video...")
+                
+                return video_path, cached_highlights.get("highlights"), None
+        
+        # Get transcript with timestamps
+        if status_callback:
+            status_callback("Fetching video transcript with timestamps...")
+            
+        if progress_callback:
+            progress_callback(10)
+        
+        try:
+            timestamped_transcript, transcript_list = get_transcript_with_timestamps(youtube_url)
+        except Exception as e:
+            error_msg = f"Error getting transcript with timestamps: {str(e)}"
+            logger.error(error_msg)
+            return None, None, error_msg
+        
+        if not timestamped_transcript:
+            error_msg = "No transcript available for this video."
+            logger.error(error_msg)
+            return None, None, error_msg
+        
+        if status_callback:
+            status_callback("Downloading video and analyzing key moments...")
+            
+        if progress_callback:
+            progress_callback(30)
+        
+        # Generate highlights video
+        try:
+            highlights_path, highlights = generate_highlights_video(
+                youtube_url=youtube_url,
+                video_id=video_id,
+                transcript_text=timestamped_transcript,
+                max_highlights=max_highlights
+            )
+            
+            if not highlights_path:
+                if highlights:
+                    # We have highlights but no video - likely a download issue
+                    error_msg = "Failed to download the video. YouTube may have restricted this content or changed their API."
+                    logger.error(error_msg)
+                    return None, highlights, error_msg
+                else:
+                    error_msg = "Failed to generate highlights video. The AI couldn't identify key moments."
+                    logger.error(error_msg)
+                    return None, None, error_msg
+                    
+        except Exception as highlight_error:
+            error_msg = f"Error in highlights generation: {str(highlight_error)}"
+            logger.error(error_msg)
+            return None, None, error_msg
+        
+        if progress_callback:
+            progress_callback(90)
+        
+        # Cache the highlights video info
+        cache_highlights_video(video_id, highlights_path, highlights)
+        
+        if progress_callback:
+            progress_callback(100)
+            
+        if status_callback:
+            status_callback("Highlights video generated successfully!")
+        
+        return highlights_path, highlights, None
+        
+    except Exception as e:
+        error_msg = f"Error generating highlights video: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return None, None, error_msg 

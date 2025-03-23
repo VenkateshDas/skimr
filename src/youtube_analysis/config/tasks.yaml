@@ -34,6 +34,8 @@ classify_video:
 
 summarize_content:
   description: >
+    The title of the YouTube video is: {video_title}
+
     Here is the YouTube video transcription:
     {transcript}
 
@@ -55,6 +57,9 @@ summarize_content:
 
 analyze_content:
   description: >
+    The title of the YouTube video is: {video_title}
+    The current date and time is: {current_datetime}
+
     Here is the YouTube video transcription:
     {transcript}
 
@@ -80,6 +85,9 @@ analyze_content:
 
 create_action_plan:
   description: >
+    The title of the YouTube video is: {video_title}
+    The current date and time is: {current_datetime}
+
     Based on the provided YouTube video transcription, you are tasked with creating a strategic action plan.
     Here is the YouTube video transcription:
     {transcript}
@@ -103,6 +111,9 @@ create_action_plan:
 
 write_report:
   description: >
+    The title of the YouTube video is: {video_title}
+    The current date and time is: {current_datetime}
+
     Here is the YouTube video transcription:
     {transcript}
 
@@ -138,6 +149,9 @@ write_report:
 
 write_blog_post:
   description: >
+    The title of the YouTube video is: {video_title}
+    The current date and time is: {current_datetime}
+
     Using the information from the report and transcript, create a comprehensive blog post about the YouTube video.
     
     Here is the YouTube video transcription:
@@ -171,6 +185,9 @@ write_blog_post:
 
 write_linkedin_post:
   description: >
+    The title of the YouTube video is: {video_title}
+    The current date and time is: {current_datetime}
+
     Using the information from the report and transcript, create a professional LinkedIn post about the YouTube video.
     
     Here is the YouTube video transcription:
@@ -204,6 +221,9 @@ write_linkedin_post:
 
 write_tweet:
   description: >
+    The title of the YouTube video is: {video_title}
+    The current date and time is: {current_datetime}
+
     Using the information from the report and transcript, create an engaging tweet about the YouTube video.
     
     Use the report of the youtube video analysis from the Write Report task.

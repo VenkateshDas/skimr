@@ -31,7 +31,7 @@ def get_transcript_with_timestamps(youtube_url: str) -> Tuple[str, List[Dict[str
         
         # Fetch transcript with timestamps
         logger.info(f"Fetching transcript with timestamps for video {video_id}")
-        transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+        transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', "de", "ta"])
         
         # Format transcript with timestamps
         formatted_transcript = []
