@@ -23,6 +23,9 @@ from reportlab.lib.enums import TA_LEFT
 from reportlab.lib import colors
 from html.parser import HTMLParser
 from html import unescape
+import tempfile
+import numpy as np
+from urllib.parse import urlparse, parse_qs
 
 # Add the src directory to the path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '.')))
@@ -41,6 +44,7 @@ from src.youtube_analysis.utils.youtube_utils import (
     cache_transcription,
     clean_markdown_fences
 )
+from src.youtube_analysis.utils.cache_utils import get_cached_analysis, cache_analysis, clear_analysis_cache
 from src.youtube_analysis.utils.logging import get_logger
 from src.youtube_analysis.auth import init_auth_state, display_auth_ui, get_current_user, logout, require_auth
 from src.youtube_analysis.ui import load_css, setup_sidebar, create_welcome_message, setup_user_menu, display_video_highlights
@@ -1504,6 +1508,21 @@ def handle_chat_input():
     # Force a rerun to update the UI with the new message
     st.rerun()
 
+def format_analysis_time(seconds, include_cached=False, cached=False):
+    """Format analysis time in a user-friendly way and optionally show cached status"""
+    if seconds < 60:
+        time_str = f"{seconds:.1f} seconds"
+    elif seconds < 3600:
+        minutes = seconds / 60
+        time_str = f"{minutes:.1f} minutes"
+    else:
+        hours = seconds / 3600
+        time_str = f"{hours:.1f} hours"
+    
+    if include_cached and cached:
+        return f"{time_str} (cached)"
+    return time_str
+
 def display_analysis_results(results: Dict[str, Any]):
     """
     Display the analysis results for a YouTube video.
@@ -1514,6 +1533,10 @@ def display_analysis_results(results: Dict[str, Any]):
     # Import modules needed in this function
     import re
     import html
+    
+    # Get analysis types from session state
+    analysis_types = st.session_state.settings.get("analysis_types", ["Summary & Classification"])
+    logger.info(f"Displaying results for selected analysis types: {analysis_types}")
     
     # Helper function to sanitize HTML content
     def sanitize_html_content(content):
@@ -1583,13 +1606,16 @@ def display_analysis_results(results: Dict[str, Any]):
         content = re.sub(r'style="([^"]*?)(?=[^"]*>)', r'style="\1"', content)
         
         return content
-    
+
     # Log what we're displaying
     logger.info(f"Displaying analysis results with keys: {list(results.keys())}")
     if "task_outputs" in results:
         logger.info(f"Task outputs available: {list(results['task_outputs'].keys())}")
     
+    # Get video information from results
     video_id = results.get("video_id", "")
+    youtube_url = results.get("youtube_url", "")
+    transcript = results.get("transcript", "")
     category = results.get("category", "Unknown")
     context_tag = results.get("context_tag", "General")
     token_usage = results.get("token_usage", None)
@@ -1688,27 +1714,429 @@ def display_analysis_results(results: Dict[str, Any]):
     else:
         st.markdown("<h2 class='sub-header'>📊 Analysis Results</h2>", unsafe_allow_html=True)
     
+    # Add section for generating additional analysis types on demand
+    video_id = results.get("video_id", "")
+    youtube_url = results.get("youtube_url", "")
+    transcript = results.get("transcript", "")
+    task_outputs = results.get("task_outputs", {})
+    
+    # Create an expander for the on-demand generation options
+    with st.expander("🔄 Generate Additional Content Types", expanded=True):
+        st.write("Generate additional content types on demand based on this video.")
+        
+        # Create a row of buttons for different analysis types
+        additional_col1, additional_col2, additional_col3, additional_col4 = st.columns(4)
+        
+        # Button for generating Action Plan
+        with additional_col1:
+            action_plan_disabled = "analyze_and_plan_content" in task_outputs
+            action_plan_btn_text = "📋 Action Plan" if not action_plan_disabled else "✅ Action Plan (Available)"
+            
+            if st.button(action_plan_btn_text, disabled=action_plan_disabled, key="generate_action_plan"):
+                with st.spinner("Generating Action Plan..."):
+                    # Create progress and status placeholders
+                    progress_placeholder = st.empty()
+                    status_placeholder = st.empty()
+                    progress_bar = progress_placeholder.progress(0)
+                    
+                    # Define update callbacks
+                    def update_progress(value):
+                        progress_bar.progress(value / 100)
+                    
+                    def update_status(message):
+                        status_placeholder.write(message)
+                    
+                    # Generate the action plan
+                    action_plan_content, result = generate_additional_analysis(
+                        youtube_url=youtube_url,
+                        video_id=video_id,
+                        transcript=transcript,
+                        analysis_type="Action Plan",
+                        progress_callback=update_progress,
+                        status_callback=update_status
+                    )
+                    
+                    # Clear progress indicators
+                    progress_placeholder.empty()
+                    status_placeholder.empty()
+                    
+                    if action_plan_content is None:
+                        # Result contains the error message
+                        st.error(f"Failed to generate Action Plan: {result}")
+                    else:
+                        # Result contains metadata
+                        # Update the results in session state
+                        if "task_outputs" not in st.session_state.analysis_results:
+                            st.session_state.analysis_results["task_outputs"] = {}
+                        
+                        st.session_state.analysis_results["task_outputs"]["analyze_and_plan_content"] = action_plan_content
+                        
+                        # Store token usage information if available
+                        if isinstance(result, dict) and "token_usage" in result:
+                            if "token_usage_by_task" not in st.session_state.analysis_results:
+                                st.session_state.analysis_results["token_usage_by_task"] = {}
+                            
+                            # Handle UsageMetrics object from CrewAI
+                            token_usage = result["token_usage"]
+                            if hasattr(token_usage, 'get'):
+                                # Already a dictionary
+                                token_info = token_usage
+                            else:
+                                # Convert UsageMetrics object to dictionary
+                                token_info = {
+                                    "total_tokens": getattr(token_usage, 'total_tokens', 0),
+                                    "prompt_tokens": getattr(token_usage, 'prompt_tokens', 0),
+                                    "completion_tokens": getattr(token_usage, 'completion_tokens', 0)
+                                }
+                            
+                            st.session_state.analysis_results["token_usage_by_task"]["analyze_and_plan_content"] = token_info
+                        
+                        # Store analysis time information if available
+                        if isinstance(result, dict) and "analysis_time" in result:
+                            if "analysis_time_by_task" not in st.session_state.analysis_results:
+                                st.session_state.analysis_results["analysis_time_by_task"] = {}
+                            st.session_state.analysis_results["analysis_time_by_task"]["analyze_and_plan_content"] = {
+                                "time": result["analysis_time"],
+                                "cached": result.get("cached", False)
+                            }
+                        
+                        st.success("Action Plan generated successfully!")
+                        # Force a rerun to show the new content
+                        st.rerun()
+        
+        # Button for generating Blog Post
+        with additional_col2:
+            blog_disabled = "write_blog_post" in task_outputs
+            blog_btn_text = "📝 Blog Post" if not blog_disabled else "✅ Blog Post (Available)"
+            
+            if st.button(blog_btn_text, disabled=blog_disabled, key="generate_blog_post"):
+                with st.spinner("Generating Blog Post..."):
+                    # Create progress and status placeholders
+                    progress_placeholder = st.empty()
+                    status_placeholder = st.empty()
+                    progress_bar = progress_placeholder.progress(0)
+                    
+                    # Define update callbacks
+                    def update_progress(value):
+                        progress_bar.progress(value / 100)
+                    
+                    def update_status(message):
+                        status_placeholder.write(message)
+                    
+                    # Generate the blog post
+                    blog_content, result = generate_additional_analysis(
+                        youtube_url=youtube_url,
+                        video_id=video_id,
+                        transcript=transcript,
+                        analysis_type="Blog Post",
+                        progress_callback=update_progress,
+                        status_callback=update_status
+                    )
+                    
+                    # Clear progress indicators
+                    progress_placeholder.empty()
+                    status_placeholder.empty()
+                    
+                    if blog_content is None:
+                        # Result contains the error message
+                        st.error(f"Failed to generate Blog Post: {result}")
+                    else:
+                        # Result contains metadata
+                        # Update the results in session state
+                        if "task_outputs" not in st.session_state.analysis_results:
+                            st.session_state.analysis_results["task_outputs"] = {}
+                        
+                        st.session_state.analysis_results["task_outputs"]["write_blog_post"] = blog_content
+                        
+                        # Store token usage information if available
+                        if isinstance(result, dict) and "token_usage" in result:
+                            if "token_usage_by_task" not in st.session_state.analysis_results:
+                                st.session_state.analysis_results["token_usage_by_task"] = {}
+                            
+                            # Handle UsageMetrics object from CrewAI
+                            token_usage = result["token_usage"]
+                            if hasattr(token_usage, 'get'):
+                                # Already a dictionary
+                                token_info = token_usage
+                            else:
+                                # Convert UsageMetrics object to dictionary
+                                token_info = {
+                                    "total_tokens": getattr(token_usage, 'total_tokens', 0),
+                                    "prompt_tokens": getattr(token_usage, 'prompt_tokens', 0),
+                                    "completion_tokens": getattr(token_usage, 'completion_tokens', 0)
+                                }
+                            
+                            st.session_state.analysis_results["token_usage_by_task"]["write_blog_post"] = token_info
+                        
+                        # Store analysis time information if available
+                        if isinstance(result, dict) and "analysis_time" in result:
+                            if "analysis_time_by_task" not in st.session_state.analysis_results:
+                                st.session_state.analysis_results["analysis_time_by_task"] = {}
+                            st.session_state.analysis_results["analysis_time_by_task"]["write_blog_post"] = {
+                                "time": result["analysis_time"],
+                                "cached": result.get("cached", False)
+                            }
+                        
+                        st.success("Blog Post generated successfully!")
+                        # Force a rerun to show the new content
+                        st.rerun()
+        
+        # Button for generating LinkedIn Post
+        with additional_col3:
+            linkedin_disabled = "write_linkedin_post" in task_outputs
+            linkedin_btn_text = "💼 LinkedIn Post" if not linkedin_disabled else "✅ LinkedIn Post (Available)"
+            
+            if st.button(linkedin_btn_text, disabled=linkedin_disabled, key="generate_linkedin_post"):
+                with st.spinner("Generating LinkedIn Post..."):
+                    # Create progress and status placeholders
+                    progress_placeholder = st.empty()
+                    status_placeholder = st.empty()
+                    progress_bar = progress_placeholder.progress(0)
+                    
+                    # Define update callbacks
+                    def update_progress(value):
+                        progress_bar.progress(value / 100)
+                    
+                    def update_status(message):
+                        status_placeholder.write(message)
+                    
+                    # Generate the LinkedIn post
+                    linkedin_content, result = generate_additional_analysis(
+                        youtube_url=youtube_url,
+                        video_id=video_id,
+                        transcript=transcript,
+                        analysis_type="LinkedIn Post",
+                        progress_callback=update_progress,
+                        status_callback=update_status
+                    )
+                    
+                    # Clear progress indicators
+                    progress_placeholder.empty()
+                    status_placeholder.empty()
+                    
+                    if linkedin_content is None:
+                        # Result contains the error message
+                        st.error(f"Failed to generate LinkedIn Post: {result}")
+                    else:
+                        # Result contains metadata
+                        # Update the results in session state
+                        if "task_outputs" not in st.session_state.analysis_results:
+                            st.session_state.analysis_results["task_outputs"] = {}
+                        
+                        st.session_state.analysis_results["task_outputs"]["write_linkedin_post"] = linkedin_content
+                        
+                        # Store token usage information if available
+                        if isinstance(result, dict) and "token_usage" in result:
+                            if "token_usage_by_task" not in st.session_state.analysis_results:
+                                st.session_state.analysis_results["token_usage_by_task"] = {}
+                            
+                            # Handle UsageMetrics object from CrewAI
+                            token_usage = result["token_usage"]
+                            if hasattr(token_usage, 'get'):
+                                # Already a dictionary
+                                token_info = token_usage
+                            else:
+                                # Convert UsageMetrics object to dictionary
+                                token_info = {
+                                    "total_tokens": getattr(token_usage, 'total_tokens', 0),
+                                    "prompt_tokens": getattr(token_usage, 'prompt_tokens', 0),
+                                    "completion_tokens": getattr(token_usage, 'completion_tokens', 0)
+                                }
+                            
+                            st.session_state.analysis_results["token_usage_by_task"]["write_linkedin_post"] = token_info
+                        
+                        # Store analysis time information if available
+                        if isinstance(result, dict) and "analysis_time" in result:
+                            if "analysis_time_by_task" not in st.session_state.analysis_results:
+                                st.session_state.analysis_results["analysis_time_by_task"] = {}
+                            st.session_state.analysis_results["analysis_time_by_task"]["write_linkedin_post"] = {
+                                "time": result["analysis_time"],
+                                "cached": result.get("cached", False)
+                            }
+                        
+                        st.success("LinkedIn Post generated successfully!")
+                        # Force a rerun to show the new content
+                        st.rerun()
+        
+        # Button for generating X Tweet
+        with additional_col4:
+            tweet_disabled = "write_tweet" in task_outputs
+            tweet_btn_text = "🐦 X Tweet" if not tweet_disabled else "✅ X Tweet (Available)"
+            
+            if st.button(tweet_btn_text, disabled=tweet_disabled, key="generate_tweet"):
+                with st.spinner("Generating X Tweet..."):
+                    # Create progress and status placeholders
+                    progress_placeholder = st.empty()
+                    status_placeholder = st.empty()
+                    progress_bar = progress_placeholder.progress(0)
+                    
+                    # Define update callbacks
+                    def update_progress(value):
+                        progress_bar.progress(value / 100)
+                    
+                    def update_status(message):
+                        status_placeholder.write(message)
+                    
+                    # Generate the tweet
+                    tweet_content, result = generate_additional_analysis(
+                        youtube_url=youtube_url,
+                        video_id=video_id,
+                        transcript=transcript,
+                        analysis_type="X Tweet",
+                        progress_callback=update_progress,
+                        status_callback=update_status
+                    )
+                    
+                    # Clear progress indicators
+                    progress_placeholder.empty()
+                    status_placeholder.empty()
+                    
+                    if tweet_content is None:
+                        # Result contains the error message
+                        st.error(f"Failed to generate X Tweet: {result}")
+                    else:
+                        # Result contains metadata
+                        # Update the results in session state
+                        if "task_outputs" not in st.session_state.analysis_results:
+                            st.session_state.analysis_results["task_outputs"] = {}
+                        
+                        st.session_state.analysis_results["task_outputs"]["write_tweet"] = tweet_content
+                        
+                        # Store token usage information if available
+                        if isinstance(result, dict) and "token_usage" in result:
+                            if "token_usage_by_task" not in st.session_state.analysis_results:
+                                st.session_state.analysis_results["token_usage_by_task"] = {}
+                            
+                            # Handle UsageMetrics object from CrewAI
+                            token_usage = result["token_usage"]
+                            if hasattr(token_usage, 'get'):
+                                # Already a dictionary
+                                token_info = token_usage
+                            else:
+                                # Convert UsageMetrics object to dictionary
+                                token_info = {
+                                    "total_tokens": getattr(token_usage, 'total_tokens', 0),
+                                    "prompt_tokens": getattr(token_usage, 'prompt_tokens', 0),
+                                    "completion_tokens": getattr(token_usage, 'completion_tokens', 0)
+                                }
+                            
+                            st.session_state.analysis_results["token_usage_by_task"]["write_tweet"] = token_info
+                        
+                        # Store analysis time information if available
+                        if isinstance(result, dict) and "analysis_time" in result:
+                            if "analysis_time_by_task" not in st.session_state.analysis_results:
+                                st.session_state.analysis_results["analysis_time_by_task"] = {}
+                            st.session_state.analysis_results["analysis_time_by_task"]["write_tweet"] = {
+                                "time": result["analysis_time"],
+                                "cached": result.get("cached", False)
+                            }
+                        
+                        st.success("X Tweet generated successfully!")
+                        # Force a rerun to show the new content
+                        st.rerun()
+    
     analysis_container = st.container()
     
     with analysis_container:
-        # Analysis tabs with Full Report as the first tab
-        tabs = st.tabs(["📄 Full Report", "📝 Blog Post", "💼 LinkedIn Post", "🐦 X Tweet", "🎙️ Transcript", "🎬 Video Highlights"])
+        # Safely get analysis types from session state
+        default_types = ["Summary & Classification", "Action Plan", "Blog Post", "LinkedIn Post", "X Tweet"]
+        analysis_types = default_types
+        if "settings" in st.session_state and "analysis_types" in st.session_state.settings:
+            analysis_types = st.session_state.settings["analysis_types"]
+        
+        # Get task outputs to determine what content is available
+        task_outputs = results.get("task_outputs", {})
+        
+        # Determine which tabs to show
+        tab_options = ["📄 Full Report"]
+        tab_index = 1  # Keep track of tab index for accessing tabs later
+        
+        # Store the indices for each tab to access them correctly later
+        blog_tab_index = None
+        linkedin_tab_index = None
+        tweet_tab_index = None
+        transcript_tab_index = None
+        highlights_tab_index = None
+        
+        # Show tabs for all available content, regardless of initial selection
+        # This ensures that if a user generates content on demand, they will see it
+        if "write_blog_post" in task_outputs:
+            tab_options.append("📝 Blog Post")
+            blog_tab_index = tab_index
+            tab_index += 1
+            
+        if "write_linkedin_post" in task_outputs:
+            tab_options.append("💼 LinkedIn Post")
+            linkedin_tab_index = tab_index
+            tab_index += 1
+            
+        if "write_tweet" in task_outputs:
+            tab_options.append("🐦 X Tweet")
+            tweet_tab_index = tab_index
+            tab_index += 1
+        
+        # Always include transcript and video highlights
+        tab_options.append("🎙️ Transcript")
+        transcript_tab_index = tab_index
+        tab_index += 1
+        
+        tab_options.append("🎬 Video Highlights")
+        highlights_tab_index = tab_index
+        
+        # Create tabs
+        tabs = st.tabs(tab_options)
         
         task_outputs = results.get("task_outputs", {})
         
         # Display content in tabs
         with tabs[0]:
-            if "classify_and_summarize_content" in task_outputs and "analyze_and_plan_content" in task_outputs:
-                # Get the report content by combining the content from classify_and_summarize_content, analyze_and_plan_content
-                report_content = f"""
+            # Get selected analysis types
+            selected_analysis_types = st.session_state.settings.get("analysis_types", ["Summary & Classification"])
+            
+            # Display token usage and analysis time if available for the overall analysis
+            if "token_usage" in results and results["token_usage"]:
+                token_info = results["token_usage"]
+                # Handle both dictionary type (cached) and UsageMetrics object type
+                if hasattr(token_info, 'get'):
+                    # It's a dictionary
+                    tokens_display = f"**Token Usage (Initial Analysis):** {token_info.get('total_tokens', 'N/A')} total tokens"
+                    if "prompt_tokens" in token_info and "completion_tokens" in token_info:
+                        tokens_display += f" ({token_info.get('prompt_tokens', 'N/A')} prompt, {token_info.get('completion_tokens', 'N/A')} completion)"
+                else:
+                    # It's a UsageMetrics object
+                    total = getattr(token_info, 'total_tokens', 'N/A')
+                    prompt = getattr(token_info, 'prompt_tokens', 'N/A')
+                    completion = getattr(token_info, 'completion_tokens', 'N/A')
+                    tokens_display = f"**Token Usage (Initial Analysis):** {total} total tokens"
+                    tokens_display += f" ({prompt} prompt, {completion} completion)"
+                st.markdown(tokens_display)
+            
+            # Display analysis time if available
+            if "analysis_time" in results:
+                analysis_time = results["analysis_time"]
+                time_display = f"**Analysis Time:** {format_analysis_time(analysis_time)}"
+                st.markdown(time_display)
+            
+            # Always show Summary & Classification if available
+            report_sections = []
+            if "classify_and_summarize_content" in task_outputs:
+                report_sections.append(f"""
 ## Classification and Summary
 
 {task_outputs["classify_and_summarize_content"]}
-
+""")
+            
+            # Show Action Plan if selected or if it was generated on-demand
+            if ("Action Plan" in selected_analysis_types or "analyze_and_plan_content" in task_outputs) and "analyze_and_plan_content" in task_outputs:
+                report_sections.append(f"""
 ## Analysis and Action Plan
 
 {task_outputs["analyze_and_plan_content"]}
-                """
+""")
+            
+            if report_sections:
+                report_content = "\n".join(report_sections)
+                
                 # Create an expander for copying the report
                 with st.expander("Copy Full Report"):
                     st.code(report_content, language="markdown")
@@ -1720,15 +2148,43 @@ def display_analysis_results(results: Dict[str, Any]):
             else:
                 st.info("Full report not available.")
                 
-    
-        # Blog Post Tab
-        with tabs[1]:
-            if "write_blog_post" in task_outputs:
+        # Blog Post Tab - only display if it was selected and available
+        if blog_tab_index is not None:
+            with tabs[blog_tab_index]:
                 # Use native Streamlit markdown for better rendering
                 st.markdown("### Blog Post")
                 
                 # Get the blog content
                 blog_content = task_outputs["write_blog_post"]
+                
+                # Display token usage and analysis time if available
+                metrics_col1, metrics_col2 = st.columns(2)
+                
+                with metrics_col1:
+                    if "token_usage_by_task" in results and "write_blog_post" in results["token_usage_by_task"]:
+                        token_info = results["token_usage_by_task"]["write_blog_post"]
+                        # Handle both dictionary type (cached) and UsageMetrics object type
+                        if hasattr(token_info, 'get'):
+                            # It's a dictionary
+                            tokens_display = f"**Token Usage:** {token_info.get('total_tokens', 'N/A')} total tokens"
+                            if "prompt_tokens" in token_info and "completion_tokens" in token_info:
+                                tokens_display += f" ({token_info.get('prompt_tokens', 'N/A')} prompt, {token_info.get('completion_tokens', 'N/A')} completion)"
+                        else:
+                            # It's a UsageMetrics object
+                            total = getattr(token_info, 'total_tokens', 'N/A')
+                            prompt = getattr(token_info, 'prompt_tokens', 'N/A')
+                            completion = getattr(token_info, 'completion_tokens', 'N/A')
+                            tokens_display = f"**Token Usage:** {total} total tokens"
+                            tokens_display += f" ({prompt} prompt, {completion} completion)"
+                        st.markdown(tokens_display)
+                
+                with metrics_col2:
+                    if "analysis_time_by_task" in results and "write_blog_post" in results["analysis_time_by_task"]:
+                        analysis_info = results["analysis_time_by_task"]["write_blog_post"]
+                        analysis_time = analysis_info.get("time", 0)
+                        cached = analysis_info.get("cached", False)
+                        time_display = f"**Analysis Time:** {format_analysis_time(analysis_time, True, cached)}"
+                        st.markdown(time_display)
                 
                 # Create an expander for copying the blog post
                 with st.expander("Copy Blog Post"):
@@ -1738,12 +2194,10 @@ def display_analysis_results(results: Dict[str, Any]):
                 # if the blog content is within fenced code blocks, then remove the top and bottom fences
                 blog_content = clean_markdown_fences(blog_content)
                 st.markdown(blog_content)
-            else:
-                st.info("Blog post not available.")
         
-        # LinkedIn Post Tab
-        with tabs[2]:
-            if "write_linkedin_post" in task_outputs:
+        # LinkedIn Post Tab - only display if it was selected and available
+        if linkedin_tab_index is not None:
+            with tabs[linkedin_tab_index]:
                 # Display LinkedIn header
                 st.markdown("""
                 <div style="display: flex; align-items: center; margin-bottom: 1rem;">
@@ -1759,6 +2213,35 @@ def display_analysis_results(results: Dict[str, Any]):
                 </div>
                 """, unsafe_allow_html=True)
                 
+                # Display token usage and analysis time if available
+                metrics_col1, metrics_col2 = st.columns(2)
+                
+                with metrics_col1:
+                    if "token_usage_by_task" in results and "write_linkedin_post" in results["token_usage_by_task"]:
+                        token_info = results["token_usage_by_task"]["write_linkedin_post"]
+                        # Handle both dictionary type (cached) and UsageMetrics object type
+                        if hasattr(token_info, 'get'):
+                            # It's a dictionary
+                            tokens_display = f"**Token Usage:** {token_info.get('total_tokens', 'N/A')} total tokens"
+                            if "prompt_tokens" in token_info and "completion_tokens" in token_info:
+                                tokens_display += f" ({token_info.get('prompt_tokens', 'N/A')} prompt, {token_info.get('completion_tokens', 'N/A')} completion)"
+                        else:
+                            # It's a UsageMetrics object
+                            total = getattr(token_info, 'total_tokens', 'N/A')
+                            prompt = getattr(token_info, 'prompt_tokens', 'N/A')
+                            completion = getattr(token_info, 'completion_tokens', 'N/A')
+                            tokens_display = f"**Token Usage:** {total} total tokens"
+                            tokens_display += f" ({prompt} prompt, {completion} completion)"
+                        st.markdown(tokens_display)
+                
+                with metrics_col2:
+                    if "analysis_time_by_task" in results and "write_linkedin_post" in results["analysis_time_by_task"]:
+                        analysis_info = results["analysis_time_by_task"]["write_linkedin_post"]
+                        analysis_time = analysis_info.get("time", 0)
+                        cached = analysis_info.get("cached", False)
+                        time_display = f"**Analysis Time:** {format_analysis_time(analysis_time, True, cached)}"
+                        st.markdown(time_display)
+                
                 # Get the LinkedIn content
                 linkedin_content = task_outputs["write_linkedin_post"]
                 
@@ -1771,12 +2254,10 @@ def display_analysis_results(results: Dict[str, Any]):
                 
                 # Display using Streamlit's native markdown support
                 st.markdown(display_content)
-            else:
-                st.info("LinkedIn post not available.")
         
-        # X/Twitter Post Tab
-        with tabs[3]:
-            if "write_tweet" in task_outputs:
+        # X/Twitter Post Tab - only display if it was selected and available
+        if tweet_tab_index is not None:
+            with tabs[tweet_tab_index]:
                 # Display X/Twitter header
                 st.markdown("""
                 <div style="display: flex; align-items: center; margin-bottom: 1rem;">
@@ -1792,6 +2273,35 @@ def display_analysis_results(results: Dict[str, Any]):
                 </div>
                 """, unsafe_allow_html=True)
                 
+                # Display token usage and analysis time if available
+                metrics_col1, metrics_col2 = st.columns(2)
+                
+                with metrics_col1:
+                    if "token_usage_by_task" in results and "write_tweet" in results["token_usage_by_task"]:
+                        token_info = results["token_usage_by_task"]["write_tweet"]
+                        # Handle both dictionary type (cached) and UsageMetrics object type
+                        if hasattr(token_info, 'get'):
+                            # It's a dictionary
+                            tokens_display = f"**Token Usage:** {token_info.get('total_tokens', 'N/A')} total tokens"
+                            if "prompt_tokens" in token_info and "completion_tokens" in token_info:
+                                tokens_display += f" ({token_info.get('prompt_tokens', 'N/A')} prompt, {token_info.get('completion_tokens', 'N/A')} completion)"
+                        else:
+                            # It's a UsageMetrics object
+                            total = getattr(token_info, 'total_tokens', 'N/A')
+                            prompt = getattr(token_info, 'prompt_tokens', 'N/A')
+                            completion = getattr(token_info, 'completion_tokens', 'N/A')
+                            tokens_display = f"**Token Usage:** {total} total tokens"
+                            tokens_display += f" ({prompt} prompt, {completion} completion)"
+                        st.markdown(tokens_display)
+                
+                with metrics_col2:
+                    if "analysis_time_by_task" in results and "write_tweet" in results["analysis_time_by_task"]:
+                        analysis_info = results["analysis_time_by_task"]["write_tweet"]
+                        analysis_time = analysis_info.get("time", 0)
+                        cached = analysis_info.get("cached", False)
+                        time_display = f"**Analysis Time:** {format_analysis_time(analysis_time, True, cached)}"
+                        st.markdown(time_display)
+                
                 # Get the tweet content
                 tweet_content = task_outputs["write_tweet"]
                 
@@ -1805,10 +2315,9 @@ def display_analysis_results(results: Dict[str, Any]):
                 
                 # Display using Streamlit's native markdown support
                 st.markdown(display_tweet)
-            else:
-                st.info("X post not available.")
         
-        with tabs[4]:
+        # Transcript Tab
+        with tabs[transcript_tab_index]:
             st.markdown("<h3 style='margin-bottom: 1rem;'>Video Transcript</h3>", unsafe_allow_html=True)
             
             # Add toggles for timestamps
@@ -1864,7 +2373,8 @@ def display_analysis_results(results: Dict[str, Any]):
                 if "transcript" in results:
                     st.text_area("Transcript", results["transcript"], height=400, label_visibility="collapsed")
         
-        with tabs[5]:
+        # Video Highlights Tab
+        with tabs[highlights_tab_index]:
             try:
                 if st.session_state.get("highlights_video_path") and st.session_state.get("highlights_segments"):
                     # Display the highlights video that was already generated
@@ -2158,7 +2668,8 @@ def main():
         st.session_state.settings = {
             "model": "gpt-4o-mini",
             "temperature": 0.7,
-            "use_cache": True
+            "use_cache": True,
+            "analysis_types": ["Summary & Classification"]  # Default analysis types
         }
         logger.info("Initialized default settings in session state")
     
@@ -2251,7 +2762,7 @@ def main():
         st.markdown("<h3 style='margin-bottom: 0.5rem;'>AI Model</h3>", unsafe_allow_html=True)
         model = st.selectbox(
             label="AI Model",
-            options=["gpt-4o-mini", "gemini-2.0-flash"],
+            options=["gpt-4o-mini", "gemini-2.0-flash", "gemini-2.0-flash-lite"],
             index=0,
             label_visibility="collapsed"
         )
@@ -2276,11 +2787,41 @@ def main():
             help="Enable caching for faster repeated analysis of the same videos"
         )
         
-        # Store settings in session state
+        # # Analysis options
+        # st.markdown("<h3 style='margin-top: 1rem; margin-bottom: 0.5rem;'>Analysis Options</h3>", unsafe_allow_html=True)
+        
+        # # Add a Quick Analysis option
+        # quick_analysis = st.checkbox(
+        #     "Quick Analysis (Faster)",
+        #     value=False,
+        #     help="Only generate summary and classification initially for faster results. You can generate additional content types after the analysis is complete."
+        # )
+        
+        # # Adjust the UI based on quick analysis selection
+        # if quick_analysis:
+        #     st.info("📌 Quick Analysis selected. Only summary and classification will be generated initially. You can generate additional content types after the analysis is complete.")
+        #     analysis_types = ["Summary & Classification"]
+        # else:
+        #     analysis_types = st.multiselect(
+        #         label="Select analysis types to generate:",
+        #         options=["Summary & Classification", "Action Plan", "Blog Post", "LinkedIn Post", "X Tweet"],
+        #         default=["Summary & Classification"],
+        #         help="Choose which types of content to generate during initial analysis. You can always generate additional content later."
+        #     )
+            
+            # # Make sure Summary & Classification is always included
+            # if "Summary & Classification" not in analysis_types:
+            #     analysis_types = ["Summary & Classification"] + analysis_types
+            #     st.warning("Summary & Classification is required and has been automatically selected.")
+        
+        analysis_types = ["Summary & Classification"]
+
+        # Update settings in session state
         st.session_state.settings.update({
             "model": model,
             "temperature": temperature,
-            "use_cache": use_cache
+            "use_cache": use_cache,
+            "analysis_types": analysis_types
         })
         
         # For debugging
@@ -2334,11 +2875,10 @@ def main():
             if "video_id" in st.session_state and st.session_state.video_id:
                 if st.button("🧹 Clear Cache", key="clear_cache"):
                     video_id = st.session_state.video_id
-                    # Import clear_analysis_cache from the proper module
-                    from src.youtube_analysis.utils.cache_utils import clear_analysis_cache as clear_cache_function
+                    # Import highlights cache clearing function
                     from src.youtube_analysis.utils.video_highlights import clear_highlights_cache
                     
-                    analysis_cleared = clear_cache_function(video_id)
+                    analysis_cleared = clear_analysis_cache(video_id)
                     highlights_cleared = clear_highlights_cache(video_id)
                     
                     if analysis_cleared or highlights_cleared:
@@ -2386,19 +2926,6 @@ def main():
     if not st.session_state.analysis_complete:
         # Title with sparkle emoji
         st.title("VideoGenius AI ✨")
-        # Use Streamlit's native input field for functionality
-        # Modern hero section with gradient
-        
-        # st.markdown("""
-        # <div style="background: linear-gradient(135deg, #1a1a1a, #2d2d2d); border-radius: 16px; margin: 0 auto 2.5rem auto; padding: 3rem 2rem; text-align: center; max-width: 800px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);">
-        #     <h2 style="font-size: 2rem; margin-bottom: 1.5rem; background: linear-gradient(90deg, #4dabf7, #56CCF2); -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-weight: 700;">
-        #         Unlock the Hidden Gems in Any YouTube Video
-        #     </h2>
-        #     <p style="font-size: 1.1rem; color: #e0e0e0; max-width: 600px; margin: 0 auto 2rem auto; line-height: 1.6;">
-        #         Our AI analyzes videos to deliver key insights, summaries, and allows interactive Q&A about any content.
-        #     </p>
-        # </div>
-        # """, unsafe_allow_html=True)
         # Add spacing after title to prevent overlap
         st.markdown("<div style='margin-top: 2rem;'></div>", unsafe_allow_html=True)
         
@@ -2407,8 +2934,9 @@ def main():
             <div class="url-input-label">Paste a YouTube URL to get insights</div>
         </div>
         """, unsafe_allow_html=True)
+
         url = st.text_input(
-            label="Enter YouTube URL",
+            label="YouTube URL",
             placeholder="https://www.youtube.com/watch?v=...",
             label_visibility="collapsed"
         )
@@ -2558,22 +3086,33 @@ def main():
                                 
                                 # Force new analysis if checkbox is unchecked
                                 if not use_cache:
-                                    # Force clear the cache for this video
-                                    from src.youtube_analysis.utils.cache_utils import clear_analysis_cache
-                                    video_id = extract_video_id(url)
-                                    if video_id:
-                                        logger.info(f"Forcing new analysis by clearing cache for video {video_id}")
-                                        clear_analysis_cache(video_id)
+                                    # Clear the analysis cache for this video
+                                    logger.info(f"Forcing new analysis by clearing cache for video {video_id}")
+                                    clear_analysis_cache(video_id)
                                 
                                 # Define function to run analysis
                                 def run_analysis_with_timeout():
                                     logger.info(f"Starting analysis with use_cache={use_cache}, url={url}")
                                     try:
+                                        # Safely get analysis types from session state
+                                        analysis_types = ["Summary & Classification"]  # Default fallback
+                                        if "settings" in st.session_state and "analysis_types" in st.session_state.settings:
+                                            analysis_types = st.session_state.settings["analysis_types"]
+                                            logger.info(f"Using analysis types from settings: {analysis_types}")
+                                        else:
+                                            logger.warning("Using default analysis types as settings not found in session state")
+                                        
+                                        # Ensure Summary & Classification is always included
+                                        if "Summary & Classification" not in analysis_types:
+                                            analysis_types = ["Summary & Classification"] + analysis_types
+                                            logger.info(f"Added required Summary & Classification to analysis types: {analysis_types}")
+                                        
                                         analysis_result = run_analysis(
                                             url,  
                                             update_progress,
                                             update_status,
-                                            use_cache=use_cache  # Use the captured value from outside
+                                            use_cache=use_cache,
+                                            analysis_types=tuple(analysis_types)
                                         )
                                         # Handle the returned value properly
                                         if isinstance(analysis_result, tuple) and len(analysis_result) == 2:
@@ -2907,6 +3446,173 @@ def main():
                     
                 logger.info("Displaying fallback analysis results")
                 display_analysis_results(results)
+
+def generate_additional_analysis(youtube_url: str, video_id: str, transcript: str, analysis_type: str, progress_callback=None, status_callback=None):
+    """
+    Generate a specific additional analysis type on demand after the initial analysis is complete.
+    
+    Args:
+        youtube_url: The URL of the YouTube video
+        video_id: The YouTube video ID
+        transcript: The video transcript
+        analysis_type: The specific analysis type to generate (e.g., "Blog Post", "LinkedIn Post", "X Tweet")
+        progress_callback: Optional callback function to update progress
+        status_callback: Optional callback function to update status messages
+        
+    Returns:
+        A tuple containing the generated content (or None if error) and either an error message or metadata dict
+    """
+    logger.info(f"Generating additional analysis type: {analysis_type} for video {video_id}")
+    
+    try:
+        # Start timing the analysis
+        start_time = datetime.now()
+        
+        # Get model settings from session state
+        model = st.session_state.settings.get("model", "gpt-4o-mini")
+        temperature = st.session_state.settings.get("temperature", 0.7)
+        
+        # Update status
+        if status_callback:
+            status_callback(f"Generating {analysis_type}...")
+        
+        if progress_callback:
+            progress_callback(10)
+        
+        # Create a crew instance with just the necessary agent and task
+        from src.youtube_analysis.crew import YouTubeAnalysisCrew
+        crew_instance = YouTubeAnalysisCrew(model_name=model, temperature=temperature)
+        
+        # Create a list with just Summary & Classification and the requested analysis type
+        selected_types = ["Summary & Classification", analysis_type]
+        
+        # Check if we have cached results for this analysis type
+        cached_results = get_cached_analysis(video_id)
+        if cached_results and "task_outputs" in cached_results:
+            task_outputs = cached_results["task_outputs"]
+            
+            # If the analysis type already exists in the cached results, return it
+            if analysis_type == "Action Plan" and "analyze_and_plan_content" in task_outputs:
+                logger.info(f"Using cached Action Plan for video {video_id}")
+                end_time = datetime.now()
+                analysis_time = (end_time - start_time).total_seconds()
+                return task_outputs["analyze_and_plan_content"], {"analysis_time": analysis_time, "cached": True}
+            elif analysis_type == "Blog Post" and "write_blog_post" in task_outputs:
+                logger.info(f"Using cached Blog Post for video {video_id}")
+                end_time = datetime.now()
+                analysis_time = (end_time - start_time).total_seconds()
+                return task_outputs["write_blog_post"], {"analysis_time": analysis_time, "cached": True}
+            elif analysis_type == "LinkedIn Post" and "write_linkedin_post" in task_outputs:
+                logger.info(f"Using cached LinkedIn Post for video {video_id}")
+                end_time = datetime.now()
+                analysis_time = (end_time - start_time).total_seconds()
+                return task_outputs["write_linkedin_post"], {"analysis_time": analysis_time, "cached": True}
+            elif analysis_type == "X Tweet" and "write_tweet" in task_outputs:
+                logger.info(f"Using cached X Tweet for video {video_id}")
+                end_time = datetime.now()
+                analysis_time = (end_time - start_time).total_seconds()
+                return task_outputs["write_tweet"], {"analysis_time": analysis_time, "cached": True}
+        
+        if progress_callback:
+            progress_callback(30)
+            
+        # Create a crew with only the necessary tasks
+        # Convert to tuple since lists are unhashable (required for CrewAI's caching mechanism)
+        crew = crew_instance.crew(analysis_types=tuple(selected_types))
+        
+        # Get current date and time
+        current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Get video title
+        video_info = get_video_info(youtube_url)
+        video_title = video_info.get("title", "YouTube Video")
+        
+        # Start the crew execution with the inputs
+        inputs = {
+            "youtube_url": youtube_url, 
+            "transcript": transcript, 
+            "current_datetime": current_datetime, 
+            "video_title": video_title
+        }
+        
+        if progress_callback:
+            progress_callback(50)
+            
+        # Execute with crew
+        crew_output = crew.kickoff(inputs=inputs)
+        
+        if progress_callback:
+            progress_callback(90)
+            
+        # Extract the requested content
+        task_outputs = {}
+        for task in crew.tasks:
+            if hasattr(task, 'output') and task.output:
+                task_name = task.name if hasattr(task, 'name') else task.__class__.__name__
+                task_outputs[task_name] = task.output.raw
+        
+        if progress_callback:
+            progress_callback(100)
+            
+        # Calculate analysis time
+        end_time = datetime.now()
+        analysis_time = (end_time - start_time).total_seconds()
+            
+        # Extract token usage
+        token_usage = {}
+        if hasattr(crew_output, 'token_usage'):
+            token_info = crew_output.token_usage
+            if hasattr(token_info, 'get'):
+                # Already a dictionary
+                token_usage = token_info
+            else:
+                # Convert UsageMetrics object to dictionary
+                token_usage = {
+                    "total_tokens": getattr(token_info, 'total_tokens', 0),
+                    "prompt_tokens": getattr(token_info, 'prompt_tokens', 0),
+                    "completion_tokens": getattr(token_info, 'completion_tokens', 0)
+                }
+        
+        # Determine which output to return based on the requested analysis type
+        result = None
+        if analysis_type == "Action Plan" and "analyze_and_plan_content" in task_outputs:
+            result = task_outputs["analyze_and_plan_content"]
+        elif analysis_type == "Blog Post" and "write_blog_post" in task_outputs:
+            result = task_outputs["write_blog_post"]
+        elif analysis_type == "LinkedIn Post" and "write_linkedin_post" in task_outputs:
+            result = task_outputs["write_linkedin_post"]
+        elif analysis_type == "X Tweet" and "write_tweet" in task_outputs:
+            result = task_outputs["write_tweet"]
+        else:
+            logger.error(f"Failed to generate {analysis_type}, task output not found in results")
+            return None, f"Failed to generate {analysis_type}"
+        
+        # Cache the newly created content
+        if result and cached_results:
+            if "task_outputs" not in cached_results:
+                cached_results["task_outputs"] = {}
+                
+            # Add the new analysis to the cached task outputs
+            if analysis_type == "Action Plan":
+                cached_results["task_outputs"]["analyze_and_plan_content"] = result
+            elif analysis_type == "Blog Post":
+                cached_results["task_outputs"]["write_blog_post"] = result
+            elif analysis_type == "LinkedIn Post":
+                cached_results["task_outputs"]["write_linkedin_post"] = result
+            elif analysis_type == "X Tweet":
+                cached_results["task_outputs"]["write_tweet"] = result
+                
+            # Cache the updated results
+            cache_analysis(video_id, cached_results)
+            logger.info(f"Updated cached results with new {analysis_type} for video {video_id}")
+            
+        logger.info(f"Successfully generated {analysis_type} for video {video_id}")
+        return result, {"token_usage": token_usage, "analysis_time": analysis_time, "cached": False}
+        
+    except Exception as e:
+        error_msg = f"Error generating {analysis_type}: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return None, error_msg
 
 if __name__ == "__main__":
     main() 

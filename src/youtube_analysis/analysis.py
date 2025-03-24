@@ -69,7 +69,8 @@ def extract_context_tag(output: str) -> str:
     
     return "General"
 
-def run_analysis(youtube_url: str, progress_callback=None, status_callback=None, use_cache: bool = True) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+def run_analysis(youtube_url: str, progress_callback=None, status_callback=None, use_cache: bool = True, 
+                analysis_types: List[str] = None) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """
     Run the YouTube Analysis Crew with the provided YouTube URL.
     
@@ -78,11 +79,18 @@ def run_analysis(youtube_url: str, progress_callback=None, status_callback=None,
         progress_callback: Optional callback function to update progress (0-100)
         status_callback: Optional callback function to update status messages
         use_cache: Whether to use cached analysis results if available
-        
-    Returns:
-        A tuple containing the analysis results and any error message
+        analysis_types: List of analysis types to generate (default: all types)
     """
+    # Start timing the analysis
+    start_time = datetime.now()
+    
+    # Default to all analysis types if none specified
+    if analysis_types is None:
+        analysis_types = ["Summary & Classification", "Action Plan", "Blog Post", "LinkedIn Post", "X Tweet"]
     try:
+        if analysis_types is not None and isinstance(analysis_types, list):
+            analysis_types = tuple(analysis_types) 
+
         # Extract video ID for thumbnail
         video_id = extract_video_id(youtube_url)
         logger.info(f"Extracted video ID: {video_id} from URL: {youtube_url}")
@@ -121,6 +129,12 @@ def run_analysis(youtube_url: str, progress_callback=None, status_callback=None,
                 
                 if progress_callback:
                     progress_callback(100)
+                
+                # Calculate analysis time for cached results
+                end_time = datetime.now()
+                analysis_time = (end_time - start_time).total_seconds()
+                cached_results["analysis_time"] = analysis_time
+                cached_results["cached"] = True
             
             # We need to recreate the chat agent since it's not serializable
             try:
@@ -192,7 +206,7 @@ def run_analysis(youtube_url: str, progress_callback=None, status_callback=None,
         
         try:
             logger.info("Setting up crew instance")
-            crew = crew_instance.crew()
+            crew = crew_instance.crew(analysis_types=analysis_types)
             logger.info(f"Successfully set up crew with {len(crew.tasks)} tasks")
             
             # Check if we have the expected tasks
@@ -291,6 +305,24 @@ def run_analysis(youtube_url: str, progress_callback=None, status_callback=None,
             # Get token usage
             token_usage = crew_output.token_usage if hasattr(crew_output, 'token_usage') else None
             
+            # Convert UsageMetrics object to dictionary if needed
+            token_usage_dict = None
+            if token_usage:
+                if hasattr(token_usage, 'get'):
+                    # Already a dictionary
+                    token_usage_dict = token_usage
+                else:
+                    # Convert UsageMetrics object to dictionary
+                    token_usage_dict = {
+                        "total_tokens": getattr(token_usage, 'total_tokens', 0),
+                        "prompt_tokens": getattr(token_usage, 'prompt_tokens', 0),
+                        "completion_tokens": getattr(token_usage, 'completion_tokens', 0)
+                    }
+            
+            # Calculate analysis time
+            end_time = datetime.now()
+            analysis_time = (end_time - start_time).total_seconds()
+            
             # Extract category from classification output
             category = "Uncategorized"
             context_tag = "General"
@@ -309,7 +341,9 @@ def run_analysis(youtube_url: str, progress_callback=None, status_callback=None,
                 "task_outputs": task_outputs,
                 "category": category,
                 "context_tag": context_tag,
-                "token_usage": token_usage,
+                "token_usage": token_usage_dict,
+                "analysis_time": analysis_time,
+                "cached": False,
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "chat_details": chat_details
             }
@@ -428,6 +462,20 @@ def run_direct_analysis(youtube_url: str, plain_transcript: str, progress_callba
         # Get token usage
         token_usage = crew_output.token_usage if hasattr(crew_output, 'token_usage') else None
         
+        # Convert UsageMetrics object to dictionary if needed
+        token_usage_dict = None
+        if token_usage:
+            if hasattr(token_usage, 'get'):
+                # Already a dictionary
+                token_usage_dict = token_usage
+            else:
+                # Convert UsageMetrics object to dictionary
+                token_usage_dict = {
+                    "total_tokens": getattr(token_usage, 'total_tokens', 0),
+                    "prompt_tokens": getattr(token_usage, 'prompt_tokens', 0),
+                    "completion_tokens": getattr(token_usage, 'completion_tokens', 0)
+                }
+        
         # Extract category from classification output
         category = "Uncategorized"
         context_tag = "General"
@@ -444,7 +492,7 @@ def run_direct_analysis(youtube_url: str, plain_transcript: str, progress_callba
             "task_outputs": task_outputs,
             "category": category,
             "context_tag": context_tag,
-            "token_usage": token_usage,
+            "token_usage": token_usage_dict,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "chat_details": None
         }

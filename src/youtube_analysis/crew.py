@@ -69,7 +69,7 @@ class YouTubeAnalysisCrew:
         return Task(
             config=self.tasks_config['classify_and_summarize_content'],
             agent=self.classifier_agent(),
-            async_execution=True
+            async_execution=False
         )
     
     @agent
@@ -93,7 +93,7 @@ class YouTubeAnalysisCrew:
         return Task(
             config=self.tasks_config['analyze_and_plan_content'],
             agent=self.analyzer_agent(),
-            async_execution=True
+            async_execution=False
         )
     
     @agent
@@ -172,56 +172,42 @@ class YouTubeAnalysisCrew:
         )
     
     @crew
-    def crew(self) -> Crew:
+    def crew(self, analysis_types: List[str] = None) -> Crew:
         """
-        Creates the YouTube Analysis Crew.
+        Create a CrewAI Crew for YouTube analysis.
+        
+        Args:
+            analysis_types: List of analysis types to generate (default: all types)
         
         Returns:
             Crew: A CrewAI Crew instance configured for YouTube analysis.
         """
         logger.info("Creating YouTube Analysis Crew")
-        try:         
-            logger.info("Creating crew with all agents and tasks")
-            logger.info(f"Available tasks: {[t.__name__ if hasattr(t, '__name__') else str(t) for t in self.tasks]}")
+        try:
+            if analysis_types is not None and isinstance(analysis_types, tuple):
+                analysis_types = list(analysis_types)     
+            logger.info(f"Creating crew with selected analysis types: {analysis_types}")
             
-            # Create tasks with explicit debugging
+            # Create tasks based on selected analysis types
             tasks = []
-            task_methods = [
-                self.classify_and_summarize_content, 
-                self.analyze_and_plan_content,
-                self.write_blog_post,
-                self.write_linkedin_post,
-                self.write_tweet
-            ]
             
-            logger.info(f"Creating {len(task_methods)} tasks")
+            # Summary and classification are always included
+            tasks.append(self.classify_and_summarize_content())
             
-            # Enhanced error handling for task creation
-            task_creation_errors = []
-            for task_method in task_methods:
-                try:
-                    logger.info(f"Creating task from method: {task_method.__name__}")
-                    task = task_method()
-                    if task:
-                        logger.info(f"Successfully created task: {task.name}")
-                        tasks.append(task)
-                    else:
-                        error_msg = f"Task {task_method.__name__} returned None"
-                        logger.error(error_msg)
-                        task_creation_errors.append(error_msg)
-                except Exception as task_error:
-                    error_msg = f"Error creating task {task_method.__name__}: {str(task_error)}"
-                    logger.error(error_msg, exc_info=True)
-                    task_creation_errors.append(error_msg)
+            # Add other tasks based on selection
+            if "Action Plan" in analysis_types:
+                tasks.append(self.analyze_and_plan_content())
+                
+            if "Blog Post" in analysis_types:
+                tasks.append(self.write_blog_post())
+                
+            if "LinkedIn Post" in analysis_types:
+                tasks.append(self.write_linkedin_post())
+                
+            if "X Tweet" in analysis_types:
+                tasks.append(self.write_tweet())
             
             logger.info(f"Created {len(tasks)} tasks for the crew")
-            
-            if len(tasks) == 0:
-                error_msg = "No tasks were created successfully. Check task creation errors."
-                logger.error(error_msg)
-                if task_creation_errors:
-                    logger.error(f"Task creation errors: {'; '.join(task_creation_errors)}")
-                raise RuntimeError(error_msg)
             
             # Create the crew with explicit configuration
             logger.info("Creating Crew instance with the successfully created tasks")
