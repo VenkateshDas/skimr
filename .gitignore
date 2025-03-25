@@ -56,8 +56,8 @@ db/
 .youtube_analysis/
 
 # Ignore analysis cache directory
-~/.youtube_analysis/analysis_cache/
-~/.youtube_analysis/cache/
+/analysis_cache/
+/transcript_cache/
 
 # do not upload PRD markdown files
 PRD.md

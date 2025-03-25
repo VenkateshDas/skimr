@@ -9,6 +9,10 @@ from typing import Dict, Any, Optional
 
 from .logging import get_logger
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # Configure logging
 logger = get_logger("cache_utils")
 
@@ -21,11 +25,10 @@ def get_cache_dir() -> Path:
     """
     # Get cache directory from environment variable or use default
     cache_dir = os.environ.get("ANALYSIS_CACHE_DIR", None)
-    
     if not cache_dir:
-        # Use default cache directory in user's home directory
-        home_dir = Path.home()
-        cache_dir = home_dir / ".youtube_analysis" / "analysis_cache"
+        # Use default cache directory in project root
+        project_root = Path(__file__).parent.parent.parent
+        cache_dir = project_root / "analysis_cache"
     else:
         cache_dir = Path(os.path.expanduser(cache_dir))
     

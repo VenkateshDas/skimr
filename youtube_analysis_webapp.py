@@ -823,6 +823,10 @@ def display_chat_interface():
         welcome_message = f"Hello! I'm your AI assistant for the video \"{video_title}\". Ask me any questions about the content, and I'll do my best to answer based on the transcript. I'll include timestamps [MM:SS] in my answers to help you locate information in the video."
         st.session_state.chat_messages.append({"role": "assistant", "content": welcome_message})
     
+    # Initialize processing flags if not already done
+    if "is_processing_message" not in st.session_state:
+        st.session_state.is_processing_message = False
+    
     # Display all messages in the chat container
     with chat_container:
         # Display previous messages
@@ -949,6 +953,7 @@ def display_chat_interface():
                 st.session_state.streaming = False
                 st.session_state.current_question = None
                 st.session_state.supports_streaming = False
+                st.session_state.is_processing_message = False
                 logger.info("Streaming state reset")
     
     # Add a user input field outside the message container
@@ -1201,8 +1206,15 @@ def streaming_generator(agent, messages, thread_id=None):
 
 def handle_chat_input():
     """Handle chat input and generate responses separately from display function."""
+    # Check if there is already an active chat message processing
+    if st.session_state.get("is_processing_message", False):
+        return
+
     # Check if we're in streaming mode
     if hasattr(st.session_state, "streaming") and st.session_state.streaming:
+        # Mark as processing to prevent duplicate processing
+        st.session_state.is_processing_message = True
+        
         try:
             # Get chat details from session state
             chat_details = st.session_state.chat_details
@@ -1216,6 +1228,7 @@ def handle_chat_input():
                     "content": "Sorry, the chat agent is not available. Please try analyzing the video again."
                 })
                 st.session_state.streaming = False
+                st.session_state.is_processing_message = False
                 return
             
             thread_id = chat_details.get("thread_id", f"thread_{st.session_state.video_id}_{int(time.time())}")
@@ -1223,6 +1236,12 @@ def handle_chat_input():
             
             # Get the user's question
             user_input = st.session_state.current_question
+            if not user_input:
+                logger.error("No current question found in session state")
+                st.session_state.streaming = False
+                st.session_state.is_processing_message = False
+                return
+                
             logger.info(f"Processing streaming response for question: {user_input}")
             
             # Convert previous messages to the format expected by LangGraph
@@ -1325,6 +1344,7 @@ def handle_chat_input():
                 st.session_state.streaming = False
                 st.session_state.current_question = None
                 st.session_state.supports_streaming = False
+                st.session_state.is_processing_message = False
                 logger.info("Streaming state reset")
         
         except Exception as e:
@@ -1343,170 +1363,186 @@ def handle_chat_input():
             st.session_state.streaming = False
             st.session_state.current_question = None
             st.session_state.supports_streaming = False
+            st.session_state.is_processing_message = False
         
         # Force a rerun to update the UI with the new message
         st.rerun()
     
     # Original non-streaming handling for fallback
     # Check if there's a thinking message that needs to be processed
-    if not st.session_state.chat_messages or st.session_state.chat_messages[-1]["role"] != "thinking":
-        return
-    
-    logger.info("Processing non-streaming response (fallback path)")
-    
-    try:
-        # Get chat details from session state
-        chat_details = st.session_state.chat_details
-        agent = chat_details.get("agent")
+    if ("chat_messages" in st.session_state and 
+        st.session_state.chat_messages and 
+        st.session_state.chat_messages[-1]["role"] == "thinking"):
         
-        # Check if agent is None
-        if agent is None:
-            logger.error("Chat agent is not available")
-            
-            # Try to recreate the agent
-            try:
-                from src.youtube_analysis.chat import setup_chat_for_video
-                
-                # Get necessary information
-                video_id = chat_details.get("video_id")
-                youtube_url = chat_details.get("youtube_url")
-                
-                if "analysis_results" in st.session_state and st.session_state.analysis_results:
-                    results = st.session_state.analysis_results
-                    
-                    if "transcript" in results and results["transcript"]:
-                        # Get transcript list if available
-                        transcript_list = st.session_state.transcript_list if "transcript_list" in st.session_state else None
-                        
-                        # Create a new chat
-                        new_chat_details = setup_chat_for_video(youtube_url, results["transcript"], transcript_list)
-                        
-                        if new_chat_details and "agent" in new_chat_details and new_chat_details["agent"] is not None:
-                            # Update session state
-                            st.session_state.chat_details = new_chat_details
-                            
-                            # Use the new agent
-                            agent = new_chat_details["agent"]
-                            logger.info("Successfully recreated chat agent")
-            except Exception as agent_error:
-                logger.error(f"Error recreating agent: {str(agent_error)}")
+        # Mark as processing
+        st.session_state.is_processing_message = True
         
-        # If agent is still None after recreation attempt
-        if agent is None:
-            # Get video info from chat details
-            video_title = chat_details.get("title", "this video")
-            video_id = chat_details.get("video_id", "")
-            
-            # Create a fallback response
-            fallback_response = (
-                f"I'm sorry, but the interactive chat functionality is not available for \"{video_title}\". "
-                f"This could be due to one of the following reasons:\n\n"
-                f"1. The OpenAI API key may not be configured correctly\n"
-                f"2. There might have been an issue processing the transcript\n"
-                f"3. The cached analysis might not include the chat agent\n\n"
-                f"You can still view the video analysis results and transcript. "
-                f"If you'd like to use the chat feature, please try analyzing the video again or check your API key configuration."
-            )
-            
-            # Remove the thinking message
-            st.session_state.chat_messages.pop()
-            
-            # Add fallback response to chat history
-            st.session_state.chat_messages.append({
-                "role": "assistant",
-                "content": fallback_response
-            })
-            return
-        
-        thread_id = chat_details.get("thread_id", f"thread_{st.session_state.video_id}_{int(time.time())}")
-        logger.info(f"Using thread ID: {thread_id}")
-        
-        # Get the user's question (the message before the thinking message)
-        user_input = ""
-        for i in range(len(st.session_state.chat_messages) - 1, -1, -1):
-            if st.session_state.chat_messages[i]["role"] == "user":
-                user_input = st.session_state.chat_messages[i]["content"]
-                break
-        
-        if not user_input:
-            logger.error("Could not find user message")
-            # Remove the thinking message
-            st.session_state.chat_messages.pop()
-            # Add error message
-            st.session_state.chat_messages.append({
-                "role": "assistant",
-                "content": "Sorry, I couldn't process your question. Please try again."
-            })
-            return
-        
-        logger.info(f"Processing non-streaming response for question: {user_input}")
-        
-        # Convert previous messages to the format expected by LangGraph (excluding the thinking message)
-        messages = []
-        for msg in st.session_state.chat_messages:
-            if msg["role"] == "user":
-                messages.append(HumanMessage(content=msg["content"]))
-            elif msg["role"] == "assistant" and msg["role"] != "thinking" and msg["content"]:
-                messages.append(AIMessage(content=msg["content"]))
-        
-        # Make sure the last message is the user's input
-        if not messages or messages[-1].type != "human":
-            messages.append(HumanMessage(content=user_input))
-        
-        logger.info(f"Invoking chat agent with {len(messages)} messages (non-streaming)")
+        logger.info("Processing non-streaming response (fallback path)")
         
         try:
-            # Invoke the agent with the thread ID for memory persistence
-            response = agent.invoke(
-                {"messages": messages},
-                config={"configurable": {"thread_id": thread_id}},
+            # Get chat details from session state
+            chat_details = st.session_state.chat_details
+            agent = chat_details.get("agent")
+            
+            # Check if agent is None
+            if agent is None:
+                logger.error("Chat agent is not available")
                 
-            )
+                # Try to recreate the agent
+                try:
+                    from src.youtube_analysis.chat import setup_chat_for_video
+                    
+                    # Get necessary information
+                    video_id = chat_details.get("video_id")
+                    youtube_url = chat_details.get("youtube_url")
+                    
+                    if "analysis_results" in st.session_state and st.session_state.analysis_results:
+                        results = st.session_state.analysis_results
+                        
+                        if "transcript" in results and results["transcript"]:
+                            # Get transcript list if available
+                            transcript_list = st.session_state.transcript_list if "transcript_list" in st.session_state else None
+                            
+                            # Create a new chat
+                            new_chat_details = setup_chat_for_video(youtube_url, results["transcript"], transcript_list)
+                            
+                            if new_chat_details and "agent" in new_chat_details and new_chat_details["agent"] is not None:
+                                # Update session state
+                                st.session_state.chat_details = new_chat_details
+                                
+                                # Use the new agent
+                                agent = new_chat_details["agent"]
+                                logger.info("Successfully recreated chat agent")
+                except Exception as agent_error:
+                    logger.error(f"Error recreating agent: {str(agent_error)}")
             
-            # Extract the final answer
-            final_message = response["messages"][-1]
-            answer = final_message.content
+            # If agent is still None after recreation attempt
+            if agent is None:
+                # Get video info from chat details
+                video_title = chat_details.get("title", "this video")
+                video_id = chat_details.get("video_id", "")
+                
+                # Create a fallback response
+                fallback_response = (
+                    f"I'm sorry, but the interactive chat functionality is not available for \"{video_title}\". "
+                    f"This could be due to one of the following reasons:\n\n"
+                    f"1. The OpenAI API key may not be configured correctly\n"
+                    f"2. There might have been an issue processing the transcript\n"
+                    f"3. The cached analysis might not include the chat agent\n\n"
+                    f"You can still view the video analysis results and transcript. "
+                    f"If you'd like to use the chat feature, please try analyzing the video again or check your API key configuration."
+                )
+                
+                # Remove the thinking message
+                st.session_state.chat_messages.pop()
+                
+                # Add fallback response to chat history
+                st.session_state.chat_messages.append({
+                    "role": "assistant",
+                    "content": fallback_response
+                })
+                
+                # Release the processing flag
+                st.session_state.is_processing_message = False
+                return
             
-            logger.info(f"Received response from chat agent: {answer[:100]}...")
+            thread_id = chat_details.get("thread_id", f"thread_{st.session_state.video_id}_{int(time.time())}")
+            logger.info(f"Using thread ID: {thread_id}")
             
-            # Remove the thinking message
-            st.session_state.chat_messages.pop()
+            # Get the user's question (the message before the thinking message)
+            user_input = ""
+            for i in range(len(st.session_state.chat_messages) - 1, -1, -1):
+                if st.session_state.chat_messages[i]["role"] == "user":
+                    user_input = st.session_state.chat_messages[i]["content"]
+                    break
             
-            # Add AI response to chat history
-            st.session_state.chat_messages.append({
-                "role": "assistant",
-                "content": answer
-            })
+            if not user_input:
+                logger.error("Could not find user message")
+                # Remove the thinking message
+                st.session_state.chat_messages.pop()
+                # Add error message
+                st.session_state.chat_messages.append({
+                    "role": "assistant",
+                    "content": "Sorry, I couldn't process your question. Please try again."
+                })
+                
+                # Release the processing flag
+                st.session_state.is_processing_message = False
+                return
+            
+            logger.info(f"Processing non-streaming response for question: {user_input}")
+            
+            # Convert previous messages to the format expected by LangGraph (excluding the thinking message)
+            messages = []
+            for msg in st.session_state.chat_messages:
+                if msg["role"] == "user":
+                    messages.append(HumanMessage(content=msg["content"]))
+                elif msg["role"] == "assistant" and msg["role"] != "thinking" and msg["content"]:
+                    messages.append(AIMessage(content=msg["content"]))
+            
+            # Make sure the last message is the user's input
+            if not messages or messages[-1].type != "human":
+                messages.append(HumanMessage(content=user_input))
+            
+            logger.info(f"Invoking chat agent with {len(messages)} messages (non-streaming)")
+            
+            try:
+                # Invoke the agent with the thread ID for memory persistence
+                response = agent.invoke(
+                    {"messages": messages},
+                    config={"configurable": {"thread_id": thread_id}},
+                    
+                )
+                
+                # Extract the final answer
+                final_message = response["messages"][-1]
+                answer = final_message.content
+                
+                logger.info(f"Received response from chat agent: {answer[:100]}...")
+                
+                # Remove the thinking message
+                st.session_state.chat_messages.pop()
+                
+                # Add AI response to chat history
+                st.session_state.chat_messages.append({
+                    "role": "assistant",
+                    "content": answer
+                })
+            except Exception as e:
+                logger.error(f"Error invoking chat agent: {str(e)}")
+                logger.error(f"Traceback: {traceback.format_exc()}")
+                
+                # Remove the thinking message
+                st.session_state.chat_messages.pop()
+                
+                # Add error message to chat history
+                error_message = f"Sorry, I encountered an error while processing your question. Please try again. Error: {str(e)}"
+                st.session_state.chat_messages.append({
+                    "role": "assistant",
+                    "content": error_message
+                })
         except Exception as e:
-            logger.error(f"Error invoking chat agent: {str(e)}")
+            logger.error(f"Error getting chat response: {str(e)}")
             logger.error(f"Traceback: {traceback.format_exc()}")
             
-            # Remove the thinking message
-            st.session_state.chat_messages.pop()
+            # Remove the thinking message if it exists
+            if st.session_state.chat_messages and st.session_state.chat_messages[-1]["role"] == "thinking":
+                st.session_state.chat_messages.pop()
             
             # Add error message to chat history
-            error_message = f"Sorry, I encountered an error while processing your question. Please try again. Error: {str(e)}"
+            error_message = "Sorry, I encountered an error while processing your question. Please try again."
             st.session_state.chat_messages.append({
                 "role": "assistant",
                 "content": error_message
             })
-    except Exception as e:
-        logger.error(f"Error getting chat response: {str(e)}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
         
-        # Remove the thinking message if it exists
-        if st.session_state.chat_messages and st.session_state.chat_messages[-1]["role"] == "thinking":
-            st.session_state.chat_messages.pop()
+        # Release the processing flag
+        st.session_state.is_processing_message = False
         
-        # Add error message to chat history
-        error_message = "Sorry, I encountered an error while processing your question. Please try again."
-        st.session_state.chat_messages.append({
-            "role": "assistant",
-            "content": error_message
-        })
+        # Force a rerun to update the UI with the new message
+        st.rerun()
     
-    # Force a rerun to update the UI with the new message
-    st.rerun()
+    return
 
 def format_analysis_time(seconds, include_cached=False, cached=False):
     """Format analysis time in a user-friendly way and optionally show cached status"""
@@ -1730,7 +1766,7 @@ def display_analysis_results(results: Dict[str, Any]):
         # Button for generating Action Plan
         with additional_col1:
             action_plan_disabled = "analyze_and_plan_content" in task_outputs
-            action_plan_btn_text = "📋 Action Plan" if not action_plan_disabled else "✅ Action Plan (Available)"
+            action_plan_btn_text = "📋 Action Plan" if not action_plan_disabled else "✅ Action Plan (Available in Full report) "
             
             if st.button(action_plan_btn_text, disabled=action_plan_disabled, key="generate_action_plan"):
                 with st.spinner("Generating Action Plan..."):
