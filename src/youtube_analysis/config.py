@@ -19,7 +19,7 @@ SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 
 # Cache settings
 CACHE_EXPIRY_DAYS = int(os.getenv('CACHE_EXPIRY_DAYS', '7'))
-CACHE_DIR = os.getenv('CACHE_DIR', os.path.expanduser("~/.youtube_analysis/cache"))
+CACHE_DIR = os.getenv('CACHE_DIR', os.path.join(os.getcwd(), 'transcript_cache'))
 
 # Logging settings
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
