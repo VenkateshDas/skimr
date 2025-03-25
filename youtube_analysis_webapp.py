@@ -58,6 +58,43 @@ from langchain_openai import ChatOpenAI
 from dotenv import load_dotenv
 load_dotenv()
 
+# Configure logging
+setup_logging()
+logger = get_logger("__main__")
+
+# Check for OpenAI API key
+openai_api_key = os.environ.get("OPENAI_API_KEY")
+if not openai_api_key:
+    print("WARNING: OPENAI_API_KEY is not set in the environment. Chat functionality will be limited.")
+    logger.warning("OPENAI_API_KEY is not set in the environment. Chat functionality will be limited.")
+
+# Set page configuration (must be the first Streamlit command)
+st.set_page_config(
+    page_title="YouTube Video Analyzer",
+    page_icon=":material/movie:",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# Initialize session state variables for content generation to fix circular rerun bug
+if "content_generation_pending" not in st.session_state:
+    st.session_state.content_generation_pending = False
+if "content_type_generated" not in st.session_state:
+    st.session_state.content_type_generated = None
+
+# Check if we need to rerun after content generation
+if st.session_state.content_generation_pending:
+    # Reset the flags to prevent infinite loops
+    st.session_state.content_generation_pending = False
+    content_type = st.session_state.content_type_generated
+    st.session_state.content_type_generated = None
+    # Log that we're doing a one-time rerun
+    logger.info(f"Performing one-time rerun after generating {content_type}")
+    st.rerun()
+
+# App version
+VERSION = APP_VERSION
+
 # Helper functions for response processing
 def split_into_sentences(text: str) -> List[str]:
     """Split text into sentences for better streaming."""
@@ -102,36 +139,6 @@ def self_clean_response(text: str) -> str:
     cleaned_text = re.sub(r'^(AI:|Assistant:)\s*', '', cleaned_text)
     
     return cleaned_text
-
-# Configure logging
-setup_logging()
-logger = get_logger("__main__")
-
-# Check for OpenAI API key
-openai_api_key = os.environ.get("OPENAI_API_KEY")
-if not openai_api_key:
-    print("WARNING: OPENAI_API_KEY is not set in the environment. Chat functionality will be limited.")
-    logger.warning("OPENAI_API_KEY is not set in the environment. Chat functionality will be limited.")
-
-# Set page configuration (must be the first Streamlit command)
-st.set_page_config(
-    page_title="YouTube Video Analyzer",
-    page_icon="🎥",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-# App version
-VERSION = APP_VERSION
-
-# Define the state for our chat agent
-class AgentState(TypedDict):
-    """State for the agent."""
-    messages: Annotated[Sequence[BaseMessage], "The messages in the conversation"]
-    video_id: Annotated[str, "The YouTube video ID"]
-    youtube_url: Annotated[str, "The YouTube video URL"]
-    title: Annotated[str, "The title of the video"]
-    description: Annotated[str, "The description of the video"]
 
 def process_transcript_async(url: str, use_cache: bool = True) -> Tuple[Optional[str], Optional[List[Dict[str, Any]]], Optional[str]]:
     """
@@ -786,10 +793,19 @@ def load_css():
     </style>
     """, unsafe_allow_html=True)
 
+# Define the state for our chat agent
+class AgentState(TypedDict):
+    """State for the agent."""
+    messages: Annotated[Sequence[BaseMessage], "The messages in the conversation"]
+    video_id: Annotated[str, "The YouTube video ID"]
+    youtube_url: Annotated[str, "The YouTube video URL"]
+    title: Annotated[str, "The title of the video"]
+    description: Annotated[str, "The description of the video"]
+
 def display_chat_interface():
     """Display the chat interface for interacting with the video analysis agent."""
     # Check if chat is enabled
-    if not st.session_state.get("chat_enabled", False):
+    if not st.session_state.chat_enabled:
         st.markdown("""
         <div style="background: rgba(255, 177, 66, 0.2); border-left: 4px solid #ffb142; padding: 1.5rem; border-radius: 4px; margin-bottom: 1rem; height: 380px; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center;">
             <h3 style="margin-top: 0; color: #ffb142;">Chat Not Available</h3>
@@ -799,7 +815,7 @@ def display_chat_interface():
         return
     
     # Get chat details from session state
-    chat_details = st.session_state.get("chat_details", {})
+    chat_details = st.session_state.chat_details
     
     # Handle errors in chat details
     if not chat_details:
@@ -814,18 +830,12 @@ def display_chat_interface():
     # Create a container for the chat messages with a fixed height
     chat_container = st.container(height=380)
     
-    # Initialize chat messages if not already done
-    if "chat_messages" not in st.session_state:
-        st.session_state.chat_messages = []
-        
+    # Check if we need to add a welcome message (only if chat_messages is empty)
+    if len(st.session_state.chat_messages) == 0:
         # Add a welcome message
         video_title = chat_details.get("title", "this video")
         welcome_message = f"Hello! I'm your AI assistant for the video \"{video_title}\". Ask me any questions about the content, and I'll do my best to answer based on the transcript. I'll include timestamps [MM:SS] in my answers to help you locate information in the video."
         st.session_state.chat_messages.append({"role": "assistant", "content": welcome_message})
-    
-    # Initialize processing flags if not already done
-    if "is_processing_message" not in st.session_state:
-        st.session_state.is_processing_message = False
     
     # Display all messages in the chat container
     with chat_container:
@@ -846,7 +856,7 @@ def display_chat_interface():
                     st.markdown(message["content"])
         
         # Handle streaming response if needed
-        if hasattr(st.session_state, "streaming") and st.session_state.streaming:
+        if st.session_state.streaming:
             # Get chat details from session state
             chat_details = st.session_state.chat_details
             agent = chat_details.get("agent")
@@ -880,7 +890,7 @@ def display_chat_interface():
                 logger.info(f"Invoking chat agent with {len(messages)} messages for streaming")
                 
                 # Check if we have streaming support information
-                supports_streaming = st.session_state.get("supports_streaming", False)
+                supports_streaming = st.session_state.supports_streaming
                 logger.info(f"Using streaming support: {supports_streaming}")
                 
                 # Get agent type
@@ -992,214 +1002,100 @@ def display_chat_interface():
         st.rerun()
 
 def streaming_generator(agent, messages, thread_id=None):
-    """Generate streaming responses from the agent."""
-    try:
-        # Initialize final answer
-        final_answer = ""
-        
-        # Get agent type
-        agent_type = type(agent).__name__
-        logger.info(f"Agent type in streaming_generator: {agent_type}")
-        
-        # For CompiledStateGraph agents, we need to handle the response differently
-        if agent_type == "CompiledStateGraph":
-            logger.info("Using CompiledStateGraph streaming approach")
-            
-            # Invoke the agent with the thread ID for memory persistence
-            try:
-                logger.info("Invoking CompiledStateGraph agent")
-                response = agent.invoke(
-                    {"messages": messages},
-                    config={"configurable": {"thread_id": thread_id}},
-                )
-                
-                logger.info(f"Response type: {type(response)}")
-                
-                # Extract the final answer based on response structure
-                if isinstance(response, dict):
-                    logger.info(f"Response keys: {response.keys()}")
-                    
-                    if "messages" in response and response["messages"]:
-                        final_message = response["messages"][-1]
-                        logger.info(f"Final message type: {type(final_message)}")
-                        
-                        if hasattr(final_message, "content"):
-                            final_answer = final_message.content
-                            logger.info(f"Extracted answer from messages[-1].content")
-                        else:
-                            logger.warning(f"Final message has no content attribute: {final_message}")
-                            final_answer = str(final_message)
-                    elif "response" in response:
-                        logger.info(f"Extracting answer from response key")
-                        final_answer = response["response"]
-                elif isinstance(response, str):
-                    logger.info("Response is a string")
-                    final_answer = response
-                else:
-                    logger.warning(f"Unexpected response format: {type(response)}")
-                    final_answer = f"Received response in unexpected format. Please try again."
-                
-                logger.info(f"Final answer length: {len(final_answer)}")
-                
-                # Clean up the response to remove repetitive patterns
-                final_answer = self_clean_response(final_answer)
-                
-                # Split into sentences for better streaming
-                sentences = split_into_sentences(final_answer)
-                
-                # Yield sentences with a small delay
-                for i, sentence in enumerate(sentences):
-                    yield sentence + " "
-                    if i < 5:  # Slightly longer delay for first few sentences
-                        time.sleep(0.2)
-                    else:
-                        time.sleep(0.1)
-                
-                # Return the final answer for storage
-                return final_answer
-                
-            except Exception as e:
-                logger.error(f"Error in CompiledStateGraph streaming: {str(e)}")
-                logger.error(f"Traceback: {traceback.format_exc()}")
-                error_msg = f"Sorry, I encountered an error while processing your question. Error: {str(e)}"
-                yield error_msg
-                return error_msg
-        
-        # For agents with native streaming support
-        elif hasattr(agent, "stream") and callable(agent.stream):
-            logger.info("Using native agent.stream() method")
-            
-            # Use the agent's stream method
-            try:
-                stream = agent.stream(
-                    {"messages": messages},
-                    config={"configurable": {"thread_id": thread_id}},
-                )
-                
-                # Process the stream
-                current_response = ""
-                for chunk in stream:
-                    if hasattr(chunk, "content") and chunk.content:
-                        current_response += chunk.content
-                        yield chunk.content
-                    elif isinstance(chunk, dict) and "content" in chunk and chunk["content"]:
-                        current_response += chunk["content"]
-                        yield chunk["content"]
-                
-                # Return the final response for storage
-                return current_response
-                
-            except Exception as e:
-                logger.error(f"Error in native streaming: {str(e)}")
-                logger.error(f"Traceback: {traceback.format_exc()}")
-                error_msg = f"Sorry, I encountered an error while processing your question. Error: {str(e)}"
-                yield error_msg
-                return error_msg
-        
-        # For LLMs with OpenAI-compatible streaming
-        elif hasattr(agent, "llm") and hasattr(agent.llm, "stream") and callable(agent.llm.stream):
-            logger.info("Using LLM's stream method")
-            
-            # Use the LLM's stream method
-            try:
-                # Convert messages to the format expected by the LLM
-                llm_messages = []
-                for msg in messages:
-                    if msg.type == "human":
-                        llm_messages.append({"role": "user", "content": msg.content})
-                    elif msg.type == "ai":
-                        llm_messages.append({"role": "assistant", "content": msg.content})
-                
-                # Stream from the LLM
-                stream = agent.llm.stream(llm_messages)
-                
-                # Process the stream
-                current_response = ""
-                for chunk in stream:
-                    if hasattr(chunk, "content") and chunk.content:
-                        current_response += chunk.content
-                        yield chunk.content
-                    elif isinstance(chunk, dict) and "content" in chunk and chunk["content"]:
-                        current_response += chunk["content"]
-                        yield chunk["content"]
-                
-                # Return the final response for storage
-                return current_response
-                
-            except Exception as e:
-                logger.error(f"Error in LLM streaming: {str(e)}")
-                logger.error(f"Traceback: {traceback.format_exc()}")
-                error_msg = f"Sorry, I encountered an error while processing your question. Error: {str(e)}"
-                yield error_msg
-                return error_msg
-        
-        # Fallback to simulated streaming
-        else:
-            logger.info("Using simulated streaming")
-            
-            # Invoke the agent with the thread ID for memory persistence
-            try:
-                logger.info("Invoking agent for simulated streaming")
-                response = agent.invoke(
-                    {"messages": messages},
-                    config={"configurable": {"thread_id": thread_id}},
-                )
-                
-                logger.info(f"Response type: {type(response)}")
-                
-                # Extract the final answer based on response structure
-                if isinstance(response, dict):
-                    logger.info(f"Response keys: {response.keys()}")
-                    
-                    if "messages" in response and response["messages"]:
-                        final_message = response["messages"][-1]
-                        logger.info(f"Final message type: {type(final_message)}")
-                        
-                        if hasattr(final_message, "content"):
-                            final_answer = final_message.content
-                            logger.info(f"Extracted answer from messages[-1].content")
-                        else:
-                            logger.warning(f"Final message has no content attribute: {final_message}")
-                            final_answer = str(final_message)
-                    elif "response" in response:
-                        logger.info(f"Extracting answer from response key")
-                        final_answer = response["response"]
-                elif isinstance(response, str):
-                    logger.info("Response is a string")
-                    final_answer = response
-                else:
-                    logger.warning(f"Unexpected response format: {type(response)}")
-                    final_answer = f"Received response in unexpected format. Please try again."
-                
-                logger.info(f"Final answer length: {len(final_answer)}")
-                
-                # Clean up the response to remove repetitive patterns
-                final_answer = self_clean_response(final_answer)
-                
-                # Split into sentences for better streaming
-                sentences = split_into_sentences(final_answer)
-                
-                # Yield sentences with a small delay
-                for i, sentence in enumerate(sentences):
-                    yield sentence + " "
-                    if i < 5:  # Slightly longer delay for first few sentences
-                        time.sleep(0.2)
-                    else:
-                        time.sleep(0.1)
-                
-                # Return the final answer for storage
-                return final_answer
-                
-            except Exception as e:
-                logger.error(f"Error in simulated streaming: {str(e)}")
-                logger.error(f"Traceback: {traceback.format_exc()}")
-                error_msg = f"Sorry, I encountered an error while processing your question. Error: {str(e)}"
-                yield error_msg
-                return error_msg
+    """
+    Generate streaming responses from the agent and yield text chunks.
+    This version is simplified for use in a Streamlit app.
+    """
     
+    def extract_final_answer(response):
+        """Extracts the final answer from various response formats."""
+        if isinstance(response, dict):
+            if response.get("messages"):
+                final_message = response["messages"][-1]
+                return getattr(final_message, "content", str(final_message))
+            elif response.get("response"):
+                return response["response"]
+            elif hasattr(response, "values") and hasattr(response, "get") and response.get("messages"):
+                final_message = response.get("messages")[-1]
+                return getattr(final_message, "content", str(final_message))
+        return getattr(response, "content", response) if hasattr(response, "content") else response
+
+    try:
+        final_answer = ""
+        agent_type = type(agent).__name__
+        
+        # Branch 1: CompiledStateGraph agent
+        if agent_type == "CompiledStateGraph":
+            response = agent.invoke(
+                {"messages": messages},
+                config={"configurable": {"thread_id": thread_id}},
+            )
+            final_answer = extract_final_answer(response)
+            # If answer is empty or too generic, try to use tool outputs
+            if not final_answer or "I can only answer questions about the content" in final_answer:
+                if isinstance(response, dict) and response.get("intermediate_steps"):
+                    tool_outputs = [
+                        f"Found information: {step[1]}" 
+                        for step in response["intermediate_steps"] 
+                        if isinstance(step, tuple) and len(step) >= 2
+                    ]
+                    if tool_outputs:
+                        final_answer = "Based on the video content:\n\n" + "\n\n".join(tool_outputs)
+        
+        # Branch 2: Agent with native streaming support
+        elif hasattr(agent, "stream") and callable(agent.stream):
+            stream = agent.stream(
+                {"messages": messages},
+                config={"configurable": {"thread_id": thread_id}},
+            )
+            current_response = ""
+            for chunk in stream:
+                content = getattr(chunk, "content", chunk.get("content", ""))
+                if content:
+                    current_response += content
+                    yield content
+            return current_response
+        
+        # Branch 3: LLM with streaming via agent.llm.stream
+        elif hasattr(agent, "llm") and hasattr(agent.llm, "stream") and callable(agent.llm.stream):
+            # Convert messages to the LLM expected format
+            llm_messages = []
+            for msg in messages:
+                if msg.type == "human":
+                    llm_messages.append({"role": "user", "content": msg.content})
+                elif msg.type == "ai":
+                    llm_messages.append({"role": "assistant", "content": msg.content})
+            
+            stream = agent.llm.stream(llm_messages)
+            current_response = ""
+            for chunk in stream:
+                content = getattr(chunk, "content", chunk.get("content", ""))
+                if content:
+                    current_response += content
+                    yield content
+            return current_response
+        
+        # Branch 4: Fallback simulated streaming
+        else:
+            response = agent.invoke(
+                {"messages": messages},
+                config={"configurable": {"thread_id": thread_id}},
+            )
+            final_answer = extract_final_answer(response)
+        
+        # Clean up and prepare the final answer for streaming.
+        # Assume these helper functions are defined elsewhere:
+        #   self_clean_response(text) and split_into_sentences(text)
+        final_answer = self_clean_response(final_answer)
+        sentences = split_into_sentences(final_answer)
+        
+        # Yield each sentence with a small delay for streaming effect.
+        for i, sentence in enumerate(sentences):
+            yield sentence + " "
+            time.sleep(0.2 if i < 5 else 0.1)
+        return final_answer
+
     except Exception as e:
-        logger.error(f"Error in streaming generator: {str(e)}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
         error_msg = f"Sorry, I encountered an error while processing your question. Error: {str(e)}"
         yield error_msg
         return error_msg
@@ -1207,11 +1103,11 @@ def streaming_generator(agent, messages, thread_id=None):
 def handle_chat_input():
     """Handle chat input and generate responses separately from display function."""
     # Check if there is already an active chat message processing
-    if st.session_state.get("is_processing_message", False):
+    if st.session_state.is_processing_message:
         return
 
     # Check if we're in streaming mode
-    if hasattr(st.session_state, "streaming") and st.session_state.streaming:
+    if st.session_state.streaming:
         # Mark as processing to prevent duplicate processing
         st.session_state.is_processing_message = True
         
@@ -1259,7 +1155,7 @@ def handle_chat_input():
             logger.info(f"Invoking chat agent with {len(messages)} messages for streaming")
             
             # Check if we have streaming support information
-            supports_streaming = st.session_state.get("supports_streaming", False)
+            supports_streaming = st.session_state.supports_streaming
             logger.info(f"Using streaming support: {supports_streaming}")
             
             # Get agent type
@@ -1370,8 +1266,7 @@ def handle_chat_input():
     
     # Original non-streaming handling for fallback
     # Check if there's a thinking message that needs to be processed
-    if ("chat_messages" in st.session_state and 
-        st.session_state.chat_messages and 
+    if (st.session_state.chat_messages and 
         st.session_state.chat_messages[-1]["role"] == "thinking"):
         
         # Mark as processing
@@ -1837,8 +1732,9 @@ def display_analysis_results(results: Dict[str, Any]):
                             }
                         
                         st.success("Action Plan generated successfully!")
-                        # Force a rerun to show the new content
-                        st.rerun()
+                        # Set flag to trigger a single rerun to show new content
+                        st.session_state.content_generation_pending = True
+                        st.session_state.content_type_generated = "Action Plan"
         
         # Button for generating Blog Post
         with additional_col2:
@@ -1914,8 +1810,9 @@ def display_analysis_results(results: Dict[str, Any]):
                             }
                         
                         st.success("Blog Post generated successfully!")
-                        # Force a rerun to show the new content
-                        st.rerun()
+                        # Set flag to trigger a single rerun to show new content
+                        st.session_state.content_generation_pending = True
+                        st.session_state.content_type_generated = "Blog Post"
         
         # Button for generating LinkedIn Post
         with additional_col3:
@@ -1991,8 +1888,9 @@ def display_analysis_results(results: Dict[str, Any]):
                             }
                         
                         st.success("LinkedIn Post generated successfully!")
-                        # Force a rerun to show the new content
-                        st.rerun()
+                        # Set flag to trigger a single rerun to show new content
+                        st.session_state.content_generation_pending = True
+                        st.session_state.content_type_generated = "LinkedIn Post"
         
         # Button for generating X Tweet
         with additional_col4:
@@ -2068,8 +1966,9 @@ def display_analysis_results(results: Dict[str, Any]):
                             }
                         
                         st.success("X Tweet generated successfully!")
-                        # Force a rerun to show the new content
-                        st.rerun()
+                        # Set flag to trigger a single rerun to show new content
+                        st.session_state.content_generation_pending = True
+                        st.session_state.content_type_generated = "X Tweet"
     
     analysis_container = st.container()
     
@@ -2412,7 +2311,8 @@ def display_analysis_results(results: Dict[str, Any]):
         # Video Highlights Tab
         with tabs[highlights_tab_index]:
             try:
-                if st.session_state.get("highlights_video_path") and st.session_state.get("highlights_segments"):
+                # Check if highlights were previously generated
+                if "highlights_video_path" in st.session_state and "highlights_segments" in st.session_state and st.session_state.highlights_video_path and st.session_state.highlights_segments:
                     # Display the highlights video that was already generated
                     display_video_highlights(
                         st.session_state.highlights_video_path,
@@ -2586,15 +2486,14 @@ def convert_transcript_list_to_text(transcript_list):
 
 def check_agent_streaming_support(agent):
     """
-    Check if the agent supports streaming directly.
+    Check if the agent supports streaming responses.
     
     Args:
-        agent: The LangGraph agent to check
+        agent: The agent to check
         
     Returns:
-        A tuple containing:
-        - Boolean indicating if streaming is supported
-        - The LLM object if available, otherwise None
+        A tuple of (supports_streaming, llm) where supports_streaming is a boolean
+        indicating if the agent supports streaming and llm is the language model
     """
     if agent is None:
         logger.info("Agent is None, streaming not supported")
@@ -2694,59 +2593,32 @@ def check_agent_streaming_support(agent):
     logger.info("No streaming support detected, using fallback approach")
     return False, None
 
-def main():
-    """Main function to run the web application."""
-    # Set up logging
-    logging.basicConfig(level=logging.INFO)
-    
-    # Initialize session state variables if they don't exist
-    if "settings" not in st.session_state:
-        st.session_state.settings = {
-            "model": "gpt-4o-mini",
-            "temperature": 0.7,
-            "use_cache": True,
-            "analysis_types": ["Summary & Classification"]  # Default analysis types
-        }
-        logger.info("Initialized default settings in session state")
-    
-    # Initialize session state variables
+def initialize_session_state():
+    """Initialize all session state variables to prevent KeyError exceptions."""
+    # Authentication-related variables
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
     
     if "show_auth" not in st.session_state:
         st.session_state.show_auth = False
-        
+    
+    # Chat-related variables
     if "chat_enabled" not in st.session_state:
         st.session_state.chat_enabled = False
         
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = []
         
-    if "analysis_complete" not in st.session_state:
-        st.session_state.analysis_complete = False
-        
-    if "analysis_results" not in st.session_state:
-        st.session_state.analysis_results = None
-    
-    # Setup CSS and UI components
-    load_css()
-    
-    # Initialize authentication state
-    init_auth_state()
-    
-    # Initialize session state variables if they don't exist
-    if "chat_enabled" not in st.session_state:
-        st.session_state.chat_enabled = False
-    
-    if "chat_messages" not in st.session_state:
-        st.session_state.chat_messages = []
-    
     if "chat_details" not in st.session_state:
         st.session_state.chat_details = None
     
+    if "is_processing_message" not in st.session_state:
+        st.session_state.is_processing_message = False
+    
+    # Analysis-related variables
     if "analysis_complete" not in st.session_state:
         st.session_state.analysis_complete = False
-    
+        
     if "analysis_results" not in st.session_state:
         st.session_state.analysis_results = None
     
@@ -2759,7 +2631,14 @@ def main():
     if "video_id" not in st.session_state:
         st.session_state.video_id = None
     
-    # Initialize streaming-related session state variables
+    # Highlights-related variables
+    if "highlights_video_path" not in st.session_state:
+        st.session_state.highlights_video_path = None
+        
+    if "highlights_segments" not in st.session_state:
+        st.session_state.highlights_segments = None
+    
+    # Streaming-related variables
     if "streaming" not in st.session_state:
         st.session_state.streaming = False
     
@@ -2769,12 +2648,32 @@ def main():
     if "current_question" not in st.session_state:
         st.session_state.current_question = None
     
+    if "supports_streaming" not in st.session_state:
+        st.session_state.supports_streaming = False
+    
+    # Settings variables
     if "settings" not in st.session_state:
         st.session_state.settings = {
             "model": "gpt-4o-mini",
-            "temperature": 0.2,
-            "use_cache": True
+            "temperature": 0.7,
+            "use_cache": True,
+            "analysis_types": ["Summary & Classification"]  # Default analysis types
         }
+        logger.info("Initialized default settings in session state")
+
+def main():
+    """Main function to run the web application."""
+    # Set up logging
+    logging.basicConfig(level=logging.INFO)
+    
+    # Initialize ALL session state variables at the start
+    initialize_session_state()
+    
+    # Initialize authentication state
+    init_auth_state()
+    
+    # Setup CSS and UI components
+    load_css()
     
     # Process chat input if there's a thinking message
     if st.session_state.chat_enabled and st.session_state.chat_messages and st.session_state.chat_messages[-1]["role"] == "thinking":
@@ -2923,6 +2822,7 @@ def main():
                         st.session_state.analysis_complete = False
                         st.session_state.analysis_results = None
                         st.session_state.video_id = None
+                        st.session_state.chat_enabled = False
                         # Clear highlights-related session state
                         if "highlights_video_path" in st.session_state:
                             del st.session_state.highlights_video_path
