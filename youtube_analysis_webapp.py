@@ -70,7 +70,7 @@ if not openai_api_key:
 
 # Set page configuration (must be the first Streamlit command)
 st.set_page_config(
-    page_title="YouTube Video Analyzer",
+    page_title="Skimr Summarizer",
     page_icon=":material/movie:",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -1731,7 +1731,7 @@ def display_analysis_results(results: Dict[str, Any]):
                                 "cached": result.get("cached", False)
                             }
                         
-                        st.success("Action Plan generated successfully!")
+                        st.success("Action Plan generated successfully! Available in full report.")
                         # Set flag to trigger a single rerun to show new content
                         st.session_state.content_generation_pending = True
                         st.session_state.content_type_generated = "Action Plan"
@@ -2661,6 +2661,22 @@ def initialize_session_state():
         }
         logger.info("Initialized default settings in session state")
 
+def get_skimr_logo_base64():
+    """Returns the base64 encoded Skimr logo for embedding in HTML."""
+    import base64
+    from pathlib import Path
+    
+    # Logo file path
+    logo_path = Path("src/youtube_analysis/logo/original.png")
+    
+    # Check if the logo file exists
+    if not logo_path.exists():
+        # Use a rocket emoji as fallback
+        return None
+    
+    with open(logo_path, "rb") as img_file:
+        return base64.b64encode(img_file.read()).decode()
+
 def main():
     """Main function to run the web application."""
     # Set up logging
@@ -2691,64 +2707,61 @@ def main():
     
     # Setup sidebar with configuration
     with st.sidebar:
-        st.markdown("<h1 style='text-align: center; margin-bottom: 1.5rem;'>⚙️ Settings</h1>", unsafe_allow_html=True)
+        # Display Skimr logo at the top of the sidebar
+        logo_base64 = get_skimr_logo_base64()
+        if logo_base64:
+            st.markdown(f"""
+            <div style="text-align: center; margin-bottom: 1rem;">
+                <img src="data:image/png;base64,{logo_base64}" width="180" alt="Skimr Logo">
+            </div>
+            """, unsafe_allow_html=True)
         
-        # Model selection
-        st.markdown("<h3 style='margin-bottom: 0.5rem;'>AI Model</h3>", unsafe_allow_html=True)
-        model = st.selectbox(
-            label="AI Model",
-            options=["gpt-4o-mini", "gemini-2.0-flash", "gemini-2.0-flash-lite"],
-            index=0,
-            label_visibility="collapsed"
-        )
+        # User account section - moved to bottom
+        st.markdown("<hr style='margin: 1.5rem 0;'>", unsafe_allow_html=True)
         
-        # Temperature setting
-        st.markdown("<h3 style='margin-top: 1rem; margin-bottom: 0.5rem;'>Creativity Level</h3>", unsafe_allow_html=True)
-        temperature = st.slider(
-            label="Temperature Value",
-            min_value=0.0,
-            max_value=1.0,
-            value=0.2,
-            step=0.1,
-            label_visibility="collapsed",
-            help="Higher values make output more creative, lower values make it more deterministic"
-        )
-        
-        # Cache toggle
-        st.markdown("<h3 style='margin-top: 1rem; margin-bottom: 0.5rem;'>Performance</h3>", unsafe_allow_html=True)
-        use_cache = st.checkbox(
-            label="Use Cache (Faster Analysis)",
-            value=True,
-            help="Enable caching for faster repeated analysis of the same videos"
-        )
-        
-        # # Analysis options
-        # st.markdown("<h3 style='margin-top: 1rem; margin-bottom: 0.5rem;'>Analysis Options</h3>", unsafe_allow_html=True)
-        
-        # # Add a Quick Analysis option
-        # quick_analysis = st.checkbox(
-        #     "Quick Analysis (Faster)",
-        #     value=False,
-        #     help="Only generate summary and classification initially for faster results. You can generate additional content types after the analysis is complete."
-        # )
-        
-        # # Adjust the UI based on quick analysis selection
-        # if quick_analysis:
-        #     st.info("📌 Quick Analysis selected. Only summary and classification will be generated initially. You can generate additional content types after the analysis is complete.")
-        #     analysis_types = ["Summary & Classification"]
-        # else:
-        #     analysis_types = st.multiselect(
-        #         label="Select analysis types to generate:",
-        #         options=["Summary & Classification", "Action Plan", "Blog Post", "LinkedIn Post", "X Tweet"],
-        #         default=["Summary & Classification"],
-        #         help="Choose which types of content to generate during initial analysis. You can always generate additional content later."
-        #     )
+        with st.expander("👤 User Account", expanded=False):
+            # Get current user
+            user = get_current_user()
             
-            # # Make sure Summary & Classification is always included
-            # if "Summary & Classification" not in analysis_types:
-            #     analysis_types = ["Summary & Classification"] + analysis_types
-            #     st.warning("Summary & Classification is required and has been automatically selected.")
-        
+            if user:
+                st.markdown(f"<p style='margin-bottom: 1rem;'>Logged in as: <b>{user.email}</b></p>", unsafe_allow_html=True)
+                if st.button("🚪 Logout"):
+                    logout()
+                    st.rerun()
+            else:
+                st.markdown("<p style='margin-bottom: 1rem;'>Not logged in</p>", unsafe_allow_html=True)
+                if st.button("🔑 Login/Sign Up"):
+                    st.session_state.show_auth = True
+
+        with st.expander("⚙️ Settings", expanded=False):
+            # Model selection
+            st.markdown("<h3 style='margin-bottom: 0.5rem;'>AI Model</h3>", unsafe_allow_html=True)
+            model = st.selectbox(
+                label="AI Model",
+                options=["gpt-4o-mini", "gemini-2.0-flash", "gemini-2.0-flash-lite"],
+                index=0,
+                label_visibility="collapsed"
+            )
+            
+            # Temperature setting
+            st.markdown("<h3 style='margin-top: 1rem; margin-bottom: 0.5rem;'>Creativity Level</h3>", unsafe_allow_html=True)
+            temperature = st.slider(
+                label="Temperature Value",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.2,
+                step=0.1,
+                label_visibility="collapsed",
+                help="Higher values make output more creative, lower values make it more deterministic"
+            )
+            
+            # Cache toggle
+            st.markdown("<h3 style='margin-top: 1rem; margin-bottom: 0.5rem;'>Performance</h3>", unsafe_allow_html=True)
+            use_cache = st.checkbox(
+                label="Use Cache (Faster Analysis)",
+                value=True,
+                help="Enable caching for faster repeated analysis of the same videos"
+            )
         analysis_types = ["Summary & Classification"]
 
         # Update settings in session state
@@ -2765,10 +2778,6 @@ def main():
         # Set environment variables based on settings
         os.environ["LLM_MODEL"] = model
         os.environ["LLM_TEMPERATURE"] = str(temperature)
-        
-        # Analysis settings section
-        st.markdown("<hr style='margin: 1.5rem 0;'>", unsafe_allow_html=True)
-        st.markdown("<h3 style='margin-bottom: 1rem;'>Analysis Options</h3>", unsafe_allow_html=True)
         
         # Reset chat button (if chat is enabled)
         if st.session_state.chat_enabled:
@@ -2789,6 +2798,10 @@ def main():
         
         # Reset analysis button (if analysis is complete)
         if st.session_state.analysis_complete:
+            # Analysis settings section
+            st.markdown("<hr style='margin: 1.5rem 0;'>", unsafe_allow_html=True)
+            st.markdown("<h3 style='margin-bottom: 1rem;'>Analysis Options</h3>", unsafe_allow_html=True)
+        
             if st.button("🔄 New Analysis", key="new_analysis"):
                 # Reset all relevant state
                 st.session_state.chat_enabled = False
@@ -2833,24 +2846,7 @@ def main():
                         st.info("No cached data found for this video")
         
         # Display version
-        st.markdown(f"<div style='text-align: center; margin-top: 2rem; opacity: 0.7;'>v{VERSION}</div>", unsafe_allow_html=True)
-        
-        # User account section - moved to bottom
-        st.markdown("<hr style='margin: 1.5rem 0;'>", unsafe_allow_html=True)
-        st.markdown("<h3 style='margin-bottom: 1rem;'>👤 User Account</h3>", unsafe_allow_html=True)
-        
-        # Get current user
-        user = get_current_user()
-        
-        if user:
-            st.markdown(f"<p style='margin-bottom: 1rem;'>Logged in as: <b>{user.email}</b></p>", unsafe_allow_html=True)
-            if st.button("🚪 Logout"):
-                logout()
-                st.rerun()
-        else:
-            st.markdown("<p style='margin-bottom: 1rem;'>Not logged in</p>", unsafe_allow_html=True)
-            if st.button("🔑 Login/Sign Up"):
-                st.session_state.show_auth = True
+        st.markdown(f"<div style='text-align: center; margin-top: 2rem; opacity: 0.7;'>Skimr v{VERSION}</div>", unsafe_allow_html=True)
     
     # Display auth UI if needed
     if st.session_state.show_auth:
@@ -2860,44 +2856,52 @@ def main():
     # Main app content
     # Only show welcome text and input fields if analysis is not complete
     if not st.session_state.analysis_complete:
-        # Title with sparkle emoji
-        st.title("VideoGenius AI ✨")
-        # Add spacing after title to prevent overlap
-        st.markdown("<div style='margin-top: 2rem;'></div>", unsafe_allow_html=True)
-        
+        # Title
         st.markdown("""
-        <div class="url-input-container">
-            <div class="url-input-label">Paste a YouTube URL to get insights</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        url = st.text_input(
-            label="YouTube URL",
-            placeholder="https://www.youtube.com/watch?v=...",
-            label_visibility="collapsed"
-        )
-
+            <div style="background: linear-gradient(45deg, #1a1a1a, #232323); padding: 1.5rem 2rem; border-radius: 12px; text-align: center; margin-top: 3rem; position: relative; overflow: hidden;">
+                <div style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: radial-gradient(circle at 70% 30%, rgba(77, 171, 247, 0.1), transparent 70%); z-index: 1;"></div>
+                <div style="position: relative; z-index: 2;">
+                    <h1 style="color: #ffffff;">SKIMR</h1>
+                    <h2 style="color: #4dabf7; ">Skim through Youtube. Know what matters fast.</h2>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        # provide a space between the title and the input field
+        st.markdown("<br>", unsafe_allow_html=True)
+        col_left, col_middle, col_right = st.columns([1, 2, 1])
+        with col_middle:
+           st.markdown("<h3 style='text-align: center; width: 100%;'>Paste your YouTube link</h3>", unsafe_allow_html=True)
+           url = st.text_input("YouTube URL", placeholder="https://www.youtube.com/watch?v=...", label_visibility="collapsed") 
         
-        # Modern URL input field with drop shadow and subtle animation
-        st.markdown("""
-        <style>
-        .url-input-container {
-            max-width: 700px;
-            margin: 0 auto 2rem auto;
-            position: relative;
-        }
-        .url-input-label {
-            font-size: 1.1rem;
-            color: #e0e0e0;
-            margin-bottom: 0.8rem;
-            text-align: center;
-            font-weight: 500;
-        }
-        </style>
-        """, unsafe_allow_html=True)
-        
-       
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("""
+            <div style="text-align: center;">
+            <h2>🎯 How Skimr Works</h2>
             
+            <ul style="list-style-type: none; text-align: justify;">
+                <li><strong>Skimr</strong> turns YouTube videos into <em>bite-sized insights</em>.</li>
+                <li>Generates <strong>summaries</strong>, <strong>action plans</strong>, and <strong>ready-to-share content</strong>.</li>
+                <li>Paste the link. <strong>We handle the rest</strong>.</li>
+            </ul>
+
+            <p><strong>Spend less time watching. More time discovering.</strong></p>
+            </div>
+            """, unsafe_allow_html=True)
+
+        with col2:
+            st.markdown("""
+            <div style="text-align: center;">
+            <h2>🚀 What You'll Get</h2>
+            <ul style="list-style-type: none; text-align: justify;">
+                <li>✅ <strong>TL;DR Magic:</strong> 10x faster than watching the video</li>
+                <li>✅ <strong>Ask & Receive:</strong> Get answers instantly</li>
+                <li>✅ <strong>Copy-paste content</strong> for Blogs, LinkedIn, X</li>
+                <li>✅ <strong>Actionable plans</strong> from passive watching</li>
+            </ul>
+            </div>
+            """, unsafe_allow_html=True)
+ 
         # Handle form submission
         if url:
             if not validate_youtube_url(url):
@@ -3215,99 +3219,11 @@ def main():
                 return
         
         # Display features and how it works sections
-        if not url:
-            # How it works section with improved styling
-            st.markdown("""
-            <h2 style="color: #4dabf7; margin: 3rem 0 1.5rem 0; text-align: center;">How It Works</h2>
-            <div style="width: 100px; height: 3px; background: #4dabf7; margin: 0 auto 2rem auto; border-radius: 2px; opacity: 0.5;"></div>
-            """, unsafe_allow_html=True)
-            
-            # Steps with improved styling - using columns instead of CSS grid
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.markdown("""
-                <div class="step-card">
-                    <div style="width: 50px; height: 50px; border-radius: 50%; background: rgba(77, 171, 247, 0.1); display: flex; align-items: center; justify-content: center; margin: 0 auto 1rem auto; border: 1px solid rgba(77, 171, 247, 0.3);">
-                        <span style="font-size: 1.5rem;">1</span>
-                    </div>
-                    <h3 style="text-align: center;">Paste URL</h3>
-                    <p>Paste any YouTube URL in the input field above and click "Analyze Video".</p>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            with col2:
-                st.markdown("""
-                <div class="step-card">
-                    <div style="width: 50px; height: 50px; border-radius: 50%; background: rgba(77, 171, 247, 0.1); display: flex; align-items: center; justify-content: center; margin: 0 auto 1rem auto; border: 1px solid rgba(77, 171, 247, 0.3);">
-                        <span style="font-size: 1.5rem;">2</span>
-                    </div>
-                    <h3 style="text-align: center;">Extract</h3>
-                    <p>Our AI extracts and processes the video transcript with advanced NLP techniques.</p>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            with col3:
-                st.markdown("""
-                <div class="step-card">
-                    <div style="width: 50px; height: 50px; border-radius: 50%; background: rgba(77, 171, 247, 0.1); display: flex; align-items: center; justify-content: center; margin: 0 auto 1rem auto; border: 1px solid rgba(77, 171, 247, 0.3);">
-                        <span style="font-size: 1.5rem;">3</span>
-                    </div>
-                    <h3 style="text-align: center;">Analyze</h3>
-                    <p>Multiple specialized AI agents analyze the content for insights and key information.</p>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            with col4:
-                st.markdown("""
-                <div class="step-card">
-                    <div style="width: 50px; height: 50px; border-radius: 50%; background: rgba(77, 171, 247, 0.1); display: flex; align-items: center; justify-content: center; margin: 0 auto 1rem auto; border: 1px solid rgba(77, 171, 247, 0.3);">
-                        <span style="font-size: 1.5rem;">4</span>
-                    </div>
-                    <h3 style="text-align: center;">Discover</h3>
-                    <p>Explore the analysis, chat with the video content, and discover valuable insights!</p>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            # Features section with improved styling
-            st.markdown("""
-            <h2 style="color: #4dabf7; margin: 3rem 0 1.5rem 0; text-align: center;">Key Features</h2>
-            <div style="width: 100px; height: 3px; background: #4dabf7; margin: 0 auto 2rem auto; border-radius: 2px; opacity: 0.5;"></div>
-            """, unsafe_allow_html=True)
-            
-            # Feature cards with improved styling - using columns instead of CSS grid
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.markdown("""
-                <div class="feature-card">
-                    <div style="font-size: 2.5rem; margin-bottom: 1rem; text-align: center;">🔎</div>
-                    <h3 style="text-align: center;">Smart Video Analysis</h3>
-                    <p>Our AI automatically categorizes videos and extracts key topics, themes, and insights with remarkable accuracy.</p>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            with col2:
-                st.markdown("""
-                <div class="feature-card">
-                    <div style="font-size: 2.5rem; margin-bottom: 1rem; text-align: center;">📋</div>
-                    <h3 style="text-align: center;">Comprehensive Summary</h3>
-                    <p>Get concise TL;DR summaries and key points to quickly understand any video without watching the entire content.</p>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            with col3:
-                st.markdown("""
-                <div class="feature-card">
-                    <div style="font-size: 2.5rem; margin-bottom: 1rem; text-align: center;">💬</div>
-                    <h3 style="text-align: center;">Interactive AI Chat</h3>
-                    <p>Ask questions about the video content and get instant, accurate answers based on the transcript in real-time.</p>
-                </div>
-                """, unsafe_allow_html=True)
+        if not url:    
                 
             # Use cases section with improved styling
             st.markdown("""
-            <h2 style="color: #4dabf7; margin: 3rem 0 1.5rem 0; text-align: center;">Perfect For</h2>
+            <h3 style="color: #4dabf7; margin: 3rem 0 1.5rem 0; text-align: center;">Who is Skimr For?</h3>
             <div style="width: 100px; height: 3px; background: #4dabf7; margin: 0 auto 2rem auto; border-radius: 2px; opacity: 0.5;"></div>
             """, unsafe_allow_html=True)
             
@@ -3315,26 +3231,26 @@ def main():
             
             with use_case_cols[0]:
                 st.markdown("""
-                <div class="feature-card">
-                    <div style="font-size: 2.5rem; margin-bottom: 1rem; text-align: center;">🎓</div>
-                    <h3 style="text-align: center;">Students & Researchers</h3>
+                <div>
+                    <div style="font-size: 2rem; margin-bottom: 1rem; text-align: center;">🎓</div>
+                    <h3 style="text-align: center;">Academics</h3>
                     <p>Quickly extract key information from educational videos, lectures, and research presentations.</p>
                 </div>
                 """, unsafe_allow_html=True)
                 
             with use_case_cols[1]:
                 st.markdown("""
-                <div class="feature-card">
-                    <div style="font-size: 2.5rem; margin-bottom: 1rem; text-align: center;">💼</div>
+                <div>
+                    <div style="font-size: 2rem; margin-bottom: 1rem; text-align: center;">💼</div>
                     <h3 style="text-align: center;">Professionals</h3>
-                    <p>Stay updated with industry trends by efficiently processing webinars, conferences, and thought leadership videos.</p>
+                    <p>Stay updated with industry trends by efficiently processing webinars, and thought leadership videos.</p>
                 </div>
                 """, unsafe_allow_html=True)
                 
             with use_case_cols[2]:
                 st.markdown("""
-                <div class="feature-card">
-                    <div style="font-size: 2.5rem; margin-bottom: 1rem; text-align: center;">🧠</div>
+                <div>
+                    <div style="font-size: 2rem; margin-bottom: 1rem; text-align: center;">🧠</div>
                     <h3 style="text-align: center;">Lifelong Learners</h3>
                     <p>Maximize learning from tutorials, courses, and educational content with AI-powered summaries and insights.</p>
                 </div>
@@ -3342,10 +3258,10 @@ def main():
             
             # Call to action section
             st.markdown("""
-            <div style="background: linear-gradient(45deg, #1a1a1a, #232323); padding: 3rem 2rem; border-radius: 12px; text-align: center; margin-top: 3rem; position: relative; overflow: hidden;">
+            <div style="background: linear-gradient(45deg, #1a1a1a, #232323); padding: 1.5rem 2rem; border-radius: 12px; text-align: center; margin-top: 3rem; position: relative; overflow: hidden;">
                 <div style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: radial-gradient(circle at 70% 30%, rgba(77, 171, 247, 0.1), transparent 70%); z-index: 1;"></div>
                 <div style="position: relative; z-index: 2;">
-                    <h2 style="color: #ffffff; margin-bottom: 1rem;">Ready to Try VideoGenius AI?</h2>
+                    <h2 style="color: #ffffff; margin-bottom: 1rem;">Ready to Try Skimr?</h2>
                     <p style="color: #e0e0e0; margin-bottom: 2rem; font-size: 1.1rem;">Paste a YouTube URL above and discover insights in seconds!</p>
                 </div>
             </div>
