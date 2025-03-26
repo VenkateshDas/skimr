@@ -9,7 +9,7 @@ __version__ = "0.1.0"
 
 # Import commonly used modules to make them available when importing the package
 from .utils.logging import get_logger
-from .auth import init_auth_state, login, init_supabase, display_auth_ui, get_current_user, logout, require_auth
+from .auth import init_auth_state, login, init_supabase, display_auth_ui, get_current_user, logout, require_auth, check_guest_usage
 from .analysis import run_analysis, run_direct_analysis, extract_category
 from .crew import YouTubeAnalysisCrew
 from .chat import setup_chat_for_video
@@ -38,6 +38,7 @@ __all__ = [
     'get_current_user',
     'logout',
     'require_auth',
+    'check_guest_usage',
     
     # Analysis
     'run_analysis',

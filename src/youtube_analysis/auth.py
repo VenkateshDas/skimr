@@ -55,6 +55,27 @@ def init_auth_state():
         # Don't show auth UI by default
         st.session_state.show_auth = False
 
+def check_guest_usage(max_guest_analyses=1):
+    """
+    Check if a guest user has exceeded their free analysis limit.
+    
+    Args:
+        max_guest_analyses: Maximum number of analyses allowed for guests
+        
+    Returns:
+        bool: True if guest can continue, False if they need to log in
+    """
+    # If user is authenticated, always allow
+    if st.session_state.authenticated:
+        return True
+        
+    # Check if guest has exceeded their limit
+    if st.session_state.guest_analysis_count >= max_guest_analyses:
+        return False
+        
+    # Guest still has free analyses
+    return True
+
 def login(email: str, password: str) -> Tuple[bool, Optional[str]]:
     """
     Log in a user with email and password.
@@ -149,11 +170,13 @@ def require_auth(func):
     """
     @wraps(func)
     def wrapper(*args, **kwargs):
-        if not st.session_state.authenticated:
-            st.warning("Please log in to access this feature.")
-            st.session_state.show_auth = True
-            return None
-        return func(*args, **kwargs)
+        # Allow limited guest usage
+        if check_guest_usage():
+            return func(*args, **kwargs)
+        # Guest has exceeded free limit
+        st.warning("You've reached the limit of free analyses. Please log in to continue.")
+        st.session_state.show_auth = True
+        return None
     return wrapper
 
 def display_auth_ui():

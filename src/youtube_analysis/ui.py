@@ -4,6 +4,8 @@ import os
 import streamlit as st
 from typing import Optional, Any, List, Dict
 
+from .config import MAX_GUEST_ANALYSES
+
 def get_category_class(category: str) -> str:
     """
     Get the CSS class for a category badge.
@@ -147,7 +149,13 @@ def setup_user_menu(user: Optional[Any] = None):
                 if logout():
                     st.rerun()
         else:
-            st.session_state.show_auth = True
+            # Show guest usage information
+            remaining = max(0, MAX_GUEST_ANALYSES - st.session_state.guest_analysis_count)
+            st.write(f"Guest mode: {remaining} free analyses remaining")
+            st.info("Create an account for unlimited analyses")
+            
+            if st.button("Login/Sign Up"):
+                st.session_state.show_auth = True
 
 def create_welcome_message(video_title: Optional[str] = None, has_timestamps: bool = False):
     """
