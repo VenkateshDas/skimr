@@ -2600,6 +2600,10 @@ def initialize_session_state():
     # Authentication-related variables
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
+
+    # Add guest usage tracking
+    if "guest_analysis_count" not in st.session_state:
+        st.session_state.guest_analysis_count = 0
     
     if "show_auth" not in st.session_state:
         st.session_state.show_auth = False
@@ -2886,314 +2890,318 @@ def main():
         if url:
             if not validate_youtube_url(url):
                 st.error("Please enter a valid YouTube URL")
-            elif not st.session_state.authenticated:
-                # Instead of showing the warning immediately, start the analysis process
-                # and then prompt for login before completing the analysis
-                with st.spinner("Preparing to analyze video..."):
-                    # Get video info to show the user what they're about to analyze
-                    video_info = get_video_info(url)
-                    if video_info:
-                        # Show login prompt
-                        st.warning("Please log in to analyze this video")
-                        st.session_state.show_auth = True
-                        
-                        # Add a button to show auth UI in case they closed it
-                        if st.button("Login/Sign Up"):
-                            st.session_state.show_auth = True
-                    else:
-                        st.error("Could not fetch video information. Please check the URL and try again.")
+
             else:
-                # Rest of the analysis code...
-                with st.spinner("Analyzing video..."):
-                    try:
-                        # Reset chat state for new analysis
-                        st.session_state.chat_enabled = False
-                        st.session_state.chat_messages = []
-                        st.session_state.chat_details = None
-                        
-                        # Clear highlights-related session state
-                        if "highlights_video_path" in st.session_state:
-                            del st.session_state.highlights_video_path
-                        if "highlights_segments" in st.session_state:
-                            del st.session_state.highlights_segments
-                        
-                        # Store the analysis start time
-                        st.session_state.analysis_start_time = datetime.now()
-                        
-                        # Create progress placeholder
-                        progress_placeholder = st.empty()
-                        status_placeholder = st.empty()
-                        
-                        # Initialize progress bar
-                        progress_bar = progress_placeholder.progress(0)
-                        status_placeholder.info("Fetching video transcript...")
-                        
-                        # Define progress update functions
-                        def update_progress(value):
-                            try:
-                                # Use thread-safe approach for Streamlit updates
-                                import streamlit as st
-                                from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
-                                
-                                # Only update if there's a valid context
-                                if get_script_run_ctx():
-                                    progress_bar.progress(value)
-                            except Exception as e:
-                                # Silently fail if we can't update the progress bar
-                                pass
-                        
-                        def update_status(message):
-                            try:
-                                # Use thread-safe approach for Streamlit updates
-                                import streamlit as st
-                                from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
-                                
-                                # Only update if there's a valid context
-                                if get_script_run_ctx():
-                                    status_placeholder.info(message)
-                            except Exception as e:
-                                # Silently fail if we can't update the status
-                                pass
-                        
-                        # Run the analysis
+                from src.youtube_analysis.auth import check_guest_usage
+                if not st.session_state.authenticated and not check_guest_usage():
+                    with st.spinner("Preparing to analyze video..."):
+                    # Get video info to show the user what they're about to analyze
+                        video_info = get_video_info(url)
+                        if video_info:
+                            # Show login prompt
+                            st.warning("You've reached the limit of free analyses. Please log in to continue.")
+                            st.session_state.show_auth = True
+                            
+                            # Add a button to show auth UI in case they closed it
+                            if st.button("Login/Sign Up"):
+                                st.session_state.show_auth = True  
+                        else:
+                            st.error("Could not fetch video information. Please check the URL and try again.")
+                else:
+                    # Rest of the analysis code...
+                    with st.spinner("Analyzing video..."):
                         try:
-                            # Get cache setting from session state
-                            use_cache = st.session_state.settings.get("use_cache", True)
+                            # Increment guest usage count if not authenticated
+                            if not st.session_state.authenticated:
+                                st.session_state.guest_analysis_count += 1
+                            # Reset chat state for new analysis
+                            st.session_state.chat_enabled = False
+                            st.session_state.chat_messages = []
+                            st.session_state.chat_details = None
                             
-                            # Get video transcript
-                            timestamped_transcript, transcript_list, error = process_transcript_async(
-                                url, 
-                                use_cache=use_cache
-                            )
+                            # Clear highlights-related session state
+                            if "highlights_video_path" in st.session_state:
+                                del st.session_state.highlights_video_path
+                            if "highlights_segments" in st.session_state:
+                                del st.session_state.highlights_segments
                             
-                            if error:
-                                st.error(f"Error: {error}")
-                                return
+                            # Store the analysis start time
+                            st.session_state.analysis_start_time = datetime.now()
                             
-                            if not timestamped_transcript or not transcript_list:
-                                st.error("Could not process video transcript. Please try another video.")
-                                return
+                            # Create progress placeholder
+                            progress_placeholder = st.empty()
+                            status_placeholder = st.empty()
                             
-                            # Get video info
-                            video_info = get_video_info(url)
-                            if not video_info:
-                                st.warning("Could not fetch complete video information. Continuing with limited data.")
-                                video_info = {
-                                    "title": "Unknown Title",
-                                    "description": "No description available",
-                                    "channel": "Unknown Channel",
-                                    "views": "Unknown",
-                                    "likes": "Unknown",
-                                    "published": "Unknown"
-                                }
+                            # Initialize progress bar
+                            progress_bar = progress_placeholder.progress(0)
+                            status_placeholder.info("Fetching video transcript...")
                             
-                            # Update progress
-                            update_progress(10)
-                            update_status("Analyzing transcript...")
-                            
-                            # Convert transcript to text
-                            transcript_text = convert_transcript_list_to_text(transcript_list)
-                            
-                            # Extract video ID
-                            video_id = extract_video_id(url)
-                            
-                            # Store in session state
-                            st.session_state.video_id = video_id
-                            st.session_state.video_url = url
-                            st.session_state.video_info = video_info
-                            st.session_state.transcript_list = transcript_list
-                            st.session_state.transcript_text = transcript_text
-                            
-                            # Run analysis with timeout
-                            try:
-                                # Get settings from session state BEFORE creating the thread
-                                use_cache = st.session_state.settings.get("use_cache", True)
-                                model = st.session_state.settings.get("model", "gpt-4o-mini")
-                                temperature = st.session_state.settings.get("temperature", 0.7)
-                                
-                                # Set environment variables based on settings
-                                os.environ["LLM_MODEL"] = model
-                                os.environ["LLM_TEMPERATURE"] = str(temperature)
-                                
-                                logger.info(f"Using settings from UI: model={model}, temperature={temperature}, use_cache={use_cache}")
-                                
-                                # Force new analysis if checkbox is unchecked
-                                if not use_cache:
-                                    # Clear the analysis cache for this video
-                                    logger.info(f"Forcing new analysis by clearing cache for video {video_id}")
-                                    clear_analysis_cache(video_id)
-                                
-                                # Define function to run analysis
-                                def run_analysis_with_timeout():
-                                    logger.info(f"Starting analysis with use_cache={use_cache}, url={url}")
-                                    try:
-                                        # Safely get analysis types from session state
-                                        analysis_types = ["Summary & Classification"]  # Default fallback
-                                        if "settings" in st.session_state and "analysis_types" in st.session_state.settings:
-                                            analysis_types = st.session_state.settings["analysis_types"]
-                                            logger.info(f"Using analysis types from settings: {analysis_types}")
-                                        else:
-                                            logger.warning("Using default analysis types as settings not found in session state")
-                                        
-                                        # Ensure Summary & Classification is always included
-                                        if "Summary & Classification" not in analysis_types:
-                                            analysis_types = ["Summary & Classification"] + analysis_types
-                                            logger.info(f"Added required Summary & Classification to analysis types: {analysis_types}")
-                                        
-                                        analysis_result = run_analysis(
-                                            url,  
-                                            update_progress,
-                                            update_status,
-                                            use_cache=use_cache,
-                                            analysis_types=tuple(analysis_types)
-                                        )
-                                        # Handle the returned value properly
-                                        if isinstance(analysis_result, tuple) and len(analysis_result) == 2:
-                                            results, error = analysis_result
-                                            logger.info(f"Analysis complete, got result: {type(results)}, {results is not None}")
-                                            return results, error
-                                        else:
-                                            logger.error(f"Unexpected result format from run_analysis: {type(analysis_result)}")
-                                            return None, "Analysis returned unexpected result format"
-                                    except Exception as e:
-                                        logger.error(f"Exception in run_analysis_with_timeout: {str(e)}", exc_info=True)
-                                        return None, str(e)
-                                
-                                # Use ThreadPoolExecutor to run with timeout
-                                with concurrent.futures.ThreadPoolExecutor() as executor:
-                                    # Get current Streamlit run context before submitting to the thread
+                            # Define progress update functions
+                            def update_progress(value):
+                                try:
+                                    # Use thread-safe approach for Streamlit updates
+                                    import streamlit as st
                                     from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
-                                    ctx = get_script_run_ctx()
                                     
-                                    # Submit the task to the executor
-                                    future = executor.submit(run_analysis_with_timeout)
-                                    
-                                    # Add the context to the thread
-                                    if ctx:
-                                        add_script_run_ctx(future, ctx)
-                                        
-                                    try:
-                                        # Wait for up to 3 minutes
-                                        results, analysis_error = future.result(timeout=180)
-                                        logger.info(f"Analysis completed with results: {results is not None}, error: {analysis_error}")
-                                    except concurrent.futures.TimeoutError:
-                                        logger.error("Analysis timed out after 3 minutes")
-                                        st.error("Analysis took too long and timed out. Please try again later or try a different video.")
-                                        return
-                                    except Exception as e:
-                                        logger.error(f"Unexpected error during analysis: {str(e)}", exc_info=True)
-                                        st.error(f"An unexpected error occurred: {str(e)}")
-                                        return
-                                
-                                # Check for errors
-                                if analysis_error:
-                                    logger.error(f"Analysis error: {analysis_error}")
-                                    st.error(f"Analysis failed: {analysis_error}")
-                                    return
-                                
-                                if not results:
-                                    logger.error("Analysis returned no results")
-                                    st.error("Analysis failed to return results. Try turning off the 'Use Cache' option in settings and try again.")
-                                    return
-                                
-                                # Validate that task_outputs exists and has content
-                                if not isinstance(results, dict) or "task_outputs" not in results or not results["task_outputs"]:
-                                    logger.error(f"Analysis results missing task_outputs: {results}")
-                                    st.error("Analysis didn't generate proper results. Try turning off the 'Use Cache' option in settings and try again.")
-                                    return
-                                    
-                                # Log task outputs for debugging
-                                logger.info(f"Task outputs from analysis: {list(results['task_outputs'].keys())}")
-                                    
-                                # Store results in session state
-                                logger.info("Storing analysis results in session state")
-                                st.session_state.analysis_results = results
-                                st.session_state.analysis_complete = True
+                                    # Only update if there's a valid context
+                                    if get_script_run_ctx():
+                                        progress_bar.progress(value)
+                                except Exception as e:
+                                    # Silently fail if we can't update the progress bar
+                                    pass
                             
-                            except Exception as timeout_error:
-                                logger.exception(f"Error during analysis with timeout: {str(timeout_error)}")
-                                st.error(f"An error occurred during analysis: {str(timeout_error)}")
-                                return
+                            def update_status(message):
+                                try:
+                                    # Use thread-safe approach for Streamlit updates
+                                    import streamlit as st
+                                    from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+                                    
+                                    # Only update if there's a valid context
+                                    if get_script_run_ctx():
+                                        status_placeholder.info(message)
+                                except Exception as e:
+                                    # Silently fail if we can't update the status
+                                    pass
                             
-                            # Setup chat for video - this is needed for both cached and non-cached results
+                            # Run the analysis
                             try:
-                                # Import the chat setup function
-                                from src.youtube_analysis.chat import setup_chat_for_video
+                                # Get cache setting from session state
+                                use_cache = st.session_state.settings.get("use_cache", True)
                                 
-                                # Get transcript from results or session state
-                                transcript = results.get("transcript", st.session_state.transcript_text)
+                                # Get video transcript
+                                timestamped_transcript, transcript_list, error = process_transcript_async(
+                                    url, 
+                                    use_cache=use_cache
+                                )
                                 
-                                # Set up chat with the transcript and list
-                                chat_details = setup_chat_for_video(url, transcript, transcript_list)
+                                if error:
+                                    st.error(f"Error: {error}")
+                                    return
                                 
-                                if chat_details:
-                                    st.session_state.chat_details = chat_details
-                                    st.session_state.chat_enabled = True
+                                if not timestamped_transcript or not transcript_list:
+                                    st.error("Could not process video transcript. Please try another video.")
+                                    return
+                                
+                                # Get video info
+                                video_info = get_video_info(url)
+                                if not video_info:
+                                    st.warning("Could not fetch complete video information. Continuing with limited data.")
+                                    video_info = {
+                                        "title": "Unknown Title",
+                                        "description": "No description available",
+                                        "channel": "Unknown Channel",
+                                        "views": "Unknown",
+                                        "likes": "Unknown",
+                                        "published": "Unknown"
+                                    }
+                                
+                                # Update progress
+                                update_progress(10)
+                                update_status("Analyzing transcript...")
+                                
+                                # Convert transcript to text
+                                transcript_text = convert_transcript_list_to_text(transcript_list)
+                                
+                                # Extract video ID
+                                video_id = extract_video_id(url)
+                                
+                                # Store in session state
+                                st.session_state.video_id = video_id
+                                st.session_state.video_url = url
+                                st.session_state.video_info = video_info
+                                st.session_state.transcript_list = transcript_list
+                                st.session_state.transcript_text = transcript_text
+                                
+                                # Run analysis with timeout
+                                try:
+                                    # Get settings from session state BEFORE creating the thread
+                                    use_cache = st.session_state.settings.get("use_cache", True)
+                                    model = st.session_state.settings.get("model", "gpt-4o-mini")
+                                    temperature = st.session_state.settings.get("temperature", 0.7)
                                     
-                                    # Create welcome message
-                                    video_title = video_info.get('title', 'this video')
-                                    welcome_message = f"Hello! I'm your AI assistant for the video \"{video_title}\". Ask me any questions about the content, and I'll do my best to answer based on the transcript. I'll include timestamps [MM:SS] in my answers to help you locate information in the video."
+                                    # Set environment variables based on settings
+                                    os.environ["LLM_MODEL"] = model
+                                    os.environ["LLM_TEMPERATURE"] = str(temperature)
                                     
-                                    # Initialize chat messages
-                                    st.session_state.chat_messages = [
-                                        {
-                                            "role": "assistant", 
-                                            "content": welcome_message
-                                        }
-                                    ]
-                                else:
-                                    logger.error("Failed to set up chat for video")
+                                    logger.info(f"Using settings from UI: model={model}, temperature={temperature}, use_cache={use_cache}")
+                                    
+                                    # Force new analysis if checkbox is unchecked
+                                    if not use_cache:
+                                        # Clear the analysis cache for this video
+                                        logger.info(f"Forcing new analysis by clearing cache for video {video_id}")
+                                        clear_analysis_cache(video_id)
+                                    
+                                    # Define function to run analysis
+                                    def run_analysis_with_timeout():
+                                        logger.info(f"Starting analysis with use_cache={use_cache}, url={url}")
+                                        try:
+                                            # Safely get analysis types from session state
+                                            analysis_types = ["Summary & Classification"]  # Default fallback
+                                            if "settings" in st.session_state and "analysis_types" in st.session_state.settings:
+                                                analysis_types = st.session_state.settings["analysis_types"]
+                                                logger.info(f"Using analysis types from settings: {analysis_types}")
+                                            else:
+                                                logger.warning("Using default analysis types as settings not found in session state")
+                                            
+                                            # Ensure Summary & Classification is always included
+                                            if "Summary & Classification" not in analysis_types:
+                                                analysis_types = ["Summary & Classification"] + analysis_types
+                                                logger.info(f"Added required Summary & Classification to analysis types: {analysis_types}")
+                                            
+                                            analysis_result = run_analysis(
+                                                url,  
+                                                update_progress,
+                                                update_status,
+                                                use_cache=use_cache,
+                                                analysis_types=tuple(analysis_types)
+                                            )
+                                            # Handle the returned value properly
+                                            if isinstance(analysis_result, tuple) and len(analysis_result) == 2:
+                                                results, error = analysis_result
+                                                logger.info(f"Analysis complete, got result: {type(results)}, {results is not None}")
+                                                return results, error
+                                            else:
+                                                logger.error(f"Unexpected result format from run_analysis: {type(analysis_result)}")
+                                                return None, "Analysis returned unexpected result format"
+                                        except Exception as e:
+                                            logger.error(f"Exception in run_analysis_with_timeout: {str(e)}", exc_info=True)
+                                            return None, str(e)
+                                    
+                                    # Use ThreadPoolExecutor to run with timeout
+                                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                                        # Get current Streamlit run context before submitting to the thread
+                                        from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+                                        ctx = get_script_run_ctx()
+                                        
+                                        # Submit the task to the executor
+                                        future = executor.submit(run_analysis_with_timeout)
+                                        
+                                        # Add the context to the thread
+                                        if ctx:
+                                            add_script_run_ctx(future, ctx)
+                                            
+                                        try:
+                                            # Wait for up to 3 minutes
+                                            results, analysis_error = future.result(timeout=180)
+                                            logger.info(f"Analysis completed with results: {results is not None}, error: {analysis_error}")
+                                        except concurrent.futures.TimeoutError:
+                                            logger.error("Analysis timed out after 3 minutes")
+                                            st.error("Analysis took too long and timed out. Please try again later or try a different video.")
+                                            return
+                                        except Exception as e:
+                                            logger.error(f"Unexpected error during analysis: {str(e)}", exc_info=True)
+                                            st.error(f"An unexpected error occurred: {str(e)}")
+                                            return
+                                    
+                                    # Check for errors
+                                    if analysis_error:
+                                        logger.error(f"Analysis error: {analysis_error}")
+                                        st.error(f"Analysis failed: {analysis_error}")
+                                        return
+                                    
+                                    if not results:
+                                        logger.error("Analysis returned no results")
+                                        st.error("Analysis failed to return results. Try turning off the 'Use Cache' option in settings and try again.")
+                                        return
+                                    
+                                    # Validate that task_outputs exists and has content
+                                    if not isinstance(results, dict) or "task_outputs" not in results or not results["task_outputs"]:
+                                        logger.error(f"Analysis results missing task_outputs: {results}")
+                                        st.error("Analysis didn't generate proper results. Try turning off the 'Use Cache' option in settings and try again.")
+                                        return
+                                        
+                                    # Log task outputs for debugging
+                                    logger.info(f"Task outputs from analysis: {list(results['task_outputs'].keys())}")
+                                        
+                                    # Store results in session state
+                                    logger.info("Storing analysis results in session state")
+                                    st.session_state.analysis_results = results
+                                    st.session_state.analysis_complete = True
+                                
+                                except Exception as timeout_error:
+                                    logger.exception(f"Error during analysis with timeout: {str(timeout_error)}")
+                                    st.error(f"An error occurred during analysis: {str(timeout_error)}")
+                                    return
+                                
+                                # Setup chat for video - this is needed for both cached and non-cached results
+                                try:
+                                    # Import the chat setup function
+                                    from src.youtube_analysis.chat import setup_chat_for_video
+                                    
+                                    # Get transcript from results or session state
+                                    transcript = results.get("transcript", st.session_state.transcript_text)
+                                    
+                                    # Set up chat with the transcript and list
+                                    chat_details = setup_chat_for_video(url, transcript, transcript_list)
+                                    
+                                    if chat_details:
+                                        st.session_state.chat_details = chat_details
+                                        st.session_state.chat_enabled = True
+                                        
+                                        # Create welcome message
+                                        video_title = video_info.get('title', 'this video')
+                                        welcome_message = f"Hello! I'm your AI assistant for the video \"{video_title}\". Ask me any questions about the content, and I'll do my best to answer based on the transcript. I'll include timestamps [MM:SS] in my answers to help you locate information in the video."
+                                        
+                                        # Initialize chat messages
+                                        st.session_state.chat_messages = [
+                                            {
+                                                "role": "assistant", 
+                                                "content": welcome_message
+                                            }
+                                        ]
+                                    else:
+                                        logger.error("Failed to set up chat for video")
+                                        st.session_state.chat_enabled = False
+                                except Exception as chat_setup_error:
+                                    logger.exception(f"Error setting up chat: {str(chat_setup_error)}")
                                     st.session_state.chat_enabled = False
-                            except Exception as chat_setup_error:
-                                logger.exception(f"Error setting up chat: {str(chat_setup_error)}")
-                                st.session_state.chat_enabled = False
-                            
-                            # Clear progress
-                            progress_placeholder.progress(100)
-                            time.sleep(0.5)
-                            progress_placeholder.empty()
-                            status_placeholder.empty()
-                            
-                            # Show success message
-                            st.success("Analysis complete!")
-                            logger.info(f"Analysis completed successfully for video: {url}")
-                            
-                            # Track analysis completion time
-                            st.session_state.analysis_complete = True
-                            
-                            if not st.session_state.analysis_results.get("cached", False):
-                                # Increment the user's summary count
-                                logger.info("About to increment user summary count")
-                                user = get_current_user()
-                                logger.info(f"Current user: {user if user else 'None'}")
                                 
-                                if user and hasattr(user, 'id'):
-                                    logger.info(f"Current user found: {user.id}, {user.email}")
-                                    try:
-                                        success = increment_summary_count(user.id)
-                                        if success:
-                                            logger.info(f"Incremented summary count for user {user.id}")
-                                        else:
-                                            logger.warning(f"Failed to increment summary count for user {user.id}")
-                                    except Exception as count_error:
-                                        logger.error(f"Exception incrementing summary count: {str(count_error)}")
+                                # Clear progress
+                                progress_placeholder.progress(100)
+                                time.sleep(0.5)
+                                progress_placeholder.empty()
+                                status_placeholder.empty()
+                                
+                                # Show success message
+                                st.success("Analysis complete!")
+                                logger.info(f"Analysis completed successfully for video: {url}")
+                                
+                                # Track analysis completion time
+                                st.session_state.analysis_complete = True
+                                
+                                if not st.session_state.analysis_results.get("cached", False):
+                                    # Increment the user's summary count
+                                    logger.info("About to increment user summary count")
+                                    user = get_current_user()
+                                    logger.info(f"Current user: {user if user else 'None'}")
+                                    
+                                    if user and hasattr(user, 'id'):
+                                        logger.info(f"Current user found: {user.id}, {user.email}")
+                                        try:
+                                            success = increment_summary_count(user.id)
+                                            if success:
+                                                logger.info(f"Incremented summary count for user {user.id}")
+                                            else:
+                                                logger.warning(f"Failed to increment summary count for user {user.id}")
+                                        except Exception as count_error:
+                                            logger.error(f"Exception incrementing summary count: {str(count_error)}")
+                                    else:
+                                        logger.warning("Cannot increment summary count: No valid user is logged in")
+
                                 else:
-                                    logger.warning("Cannot increment summary count: No valid user is logged in")
+                                    logger.warning("Using cached analysis - not incrementing summary count")
 
-                            else:
-                                logger.warning("Using cached analysis - not incrementing summary count")
-
-                            # Rerun the app to update UI with results
-                            st.rerun()
-                        except Exception as analysis_error:
-                            logger.exception(f"Exception during analysis: {str(analysis_error)}")
-                            st.error(f"Analysis failed: {str(analysis_error)}")
+                                # Rerun the app to update UI with results
+                                st.rerun()
+                            except Exception as analysis_error:
+                                logger.exception(f"Exception during analysis: {str(analysis_error)}")
+                                st.error(f"Analysis failed: {str(analysis_error)}")
+                                return
+                        except Exception as e:
+                            logger.exception(f"General error processing video: {str(e)}")
+                            st.error(f"An error occurred: {str(e)}")
                             return
-                    except Exception as e:
-                        logger.exception(f"General error processing video: {str(e)}")
-                        st.error(f"An error occurred: {str(e)}")
-                        return
-        
+            
 
         # If URL is provided, show video info
         if url and validate_youtube_url(url):

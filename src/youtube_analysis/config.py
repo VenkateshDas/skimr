@@ -17,6 +17,9 @@ YOUTUBE_API_KEY = os.getenv('YOUTUBE_API_KEY')
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 
+# Add this constant to the config file
+MAX_GUEST_ANALYSES = 1
+
 # Cache settings
 CACHE_EXPIRY_DAYS = int(os.getenv('CACHE_EXPIRY_DAYS', '7'))
 CACHE_DIR = os.getenv('CACHE_DIR', os.path.join(os.getcwd(), 'transcript_cache'))
