@@ -199,7 +199,7 @@ def get_transcript(url: str, use_cache: bool = True) -> str:
         
         # Get transcript from YouTube
         try:
-            transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', "de", "ta", "hi"])
         except Exception as e:
             raise ValueError(f"Could not get transcript: {str(e)}")
         
@@ -348,7 +348,7 @@ def get_transcript_with_timestamps(youtube_url: str) -> Tuple[str, List]:
         
         # Get transcript from YouTube
         try:
-            transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', "de", "ta", "hi"])
         except Exception as e:
             raise ValueError(f"Could not get transcript: {str(e)}")
         

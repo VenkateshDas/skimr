@@ -184,7 +184,7 @@ def process_transcript_async(url: str, use_cache: bool = True) -> Tuple[Optional
                 try:
                     # Get transcript list to reconstruct the timestamped version
                     from youtube_transcript_api import YouTubeTranscriptApi
-                    transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=["en", "de", "ta"])
+                    transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=["en", "de", "ta", "hi"])
                     
                     # Format transcript with timestamps
                     timestamped_transcript = ""
@@ -205,7 +205,7 @@ def process_transcript_async(url: str, use_cache: bool = True) -> Tuple[Optional
         try:
             # Use the YouTubeTranscriptApi directly to avoid issues with get_transcript function
             from youtube_transcript_api import YouTubeTranscriptApi
-            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en','de','ta'])
+            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en','de','ta', 'hi'])
             
             if not transcript_list:
                 logger.error(f"No transcript available for video ID: {video_id}")
