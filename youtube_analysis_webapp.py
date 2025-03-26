@@ -3161,24 +3161,28 @@ def main():
                             # Track analysis completion time
                             st.session_state.analysis_complete = True
                             
-                            # Increment the user's summary count
-                            logger.info("About to increment user summary count")
-                            user = get_current_user()
-                            logger.info(f"Current user: {user if user else 'None'}")
-                            
-                            if user and hasattr(user, 'id'):
-                                logger.info(f"Current user found: {user.id}, {user.email}")
-                                try:
-                                    success = increment_summary_count(user.id)
-                                    if success:
-                                        logger.info(f"Incremented summary count for user {user.id}")
-                                    else:
-                                        logger.warning(f"Failed to increment summary count for user {user.id}")
-                                except Exception as count_error:
-                                    logger.error(f"Exception incrementing summary count: {str(count_error)}")
+                            if not st.session_state.analysis_results.get("cached", False):
+                                # Increment the user's summary count
+                                logger.info("About to increment user summary count")
+                                user = get_current_user()
+                                logger.info(f"Current user: {user if user else 'None'}")
+                                
+                                if user and hasattr(user, 'id'):
+                                    logger.info(f"Current user found: {user.id}, {user.email}")
+                                    try:
+                                        success = increment_summary_count(user.id)
+                                        if success:
+                                            logger.info(f"Incremented summary count for user {user.id}")
+                                        else:
+                                            logger.warning(f"Failed to increment summary count for user {user.id}")
+                                    except Exception as count_error:
+                                        logger.error(f"Exception incrementing summary count: {str(count_error)}")
+                                else:
+                                    logger.warning("Cannot increment summary count: No valid user is logged in")
+
                             else:
-                                logger.warning("Cannot increment summary count: No valid user is logged in")
-                            
+                                logger.warning("Using cached analysis - not incrementing summary count")
+
                             # Rerun the app to update UI with results
                             st.rerun()
                         except Exception as analysis_error:
