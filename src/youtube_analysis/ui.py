@@ -131,6 +131,17 @@ def setup_user_menu(user: Optional[Any] = None):
         st.markdown("### User")
         if user:
             st.write(f"Logged in as: {user.email}")
+            
+            # Display user stats if available
+            try:
+                from .stats import get_summary_count
+                summary_count = get_summary_count(user.id)
+                if summary_count is not None:
+                    st.write(f"Summaries generated: {summary_count}")
+            except Exception as e:
+                # Silently ignore stats retrieval errors
+                pass
+                
             if st.button("Logout"):
                 from .auth import logout
                 if logout():

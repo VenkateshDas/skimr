@@ -24,6 +24,27 @@ def init_supabase() -> Client:
     
     return create_client(supabase_url, supabase_key)
 
+def init_supabase_admin() -> Client:
+    """
+    Initialize Supabase client with service role key for admin operations.
+    This bypasses Row Level Security and should only be used for internal operations.
+    
+    Returns:
+        Supabase admin client instance
+    """
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_service_key = os.getenv("SUPABASE_SERVICE_KEY")
+    
+    if not supabase_url:
+        raise ValueError("Supabase URL must be set in environment variables")
+    
+    if not supabase_service_key:
+        logger.warning("SUPABASE_SERVICE_KEY not found, falling back to regular key")
+        return init_supabase()
+    
+    logger.info("Using service role key for admin operations")
+    return create_client(supabase_url, supabase_service_key)
+
 def init_auth_state():
     """Initialize authentication state in session."""
     if "authenticated" not in st.session_state:
@@ -31,6 +52,7 @@ def init_auth_state():
     if "user" not in st.session_state:
         st.session_state.user = None
     if "show_auth" not in st.session_state:
+        # Don't show auth UI by default
         st.session_state.show_auth = False
 
 def login(email: str, password: str) -> Tuple[bool, Optional[str]]:

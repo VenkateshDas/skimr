@@ -8,7 +8,7 @@ import logging
 import io  # Add explicit import for io module
 from typing import Optional, Dict, Any, Tuple, List, Sequence, TypedDict, Annotated, Callable, Generator, Union
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import traceback
 import html
 import uuid
@@ -26,6 +26,7 @@ from html import unescape
 import tempfile
 import numpy as np
 from urllib.parse import urlparse, parse_qs
+import requests
 
 # Add the src directory to the path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '.')))
@@ -49,6 +50,7 @@ from src.youtube_analysis.utils.logging import get_logger
 from src.youtube_analysis.auth import init_auth_state, display_auth_ui, get_current_user, logout, require_auth
 from src.youtube_analysis.ui import load_css, setup_sidebar, create_welcome_message, setup_user_menu, display_video_highlights
 from src.youtube_analysis.analysis import generate_video_highlights
+from src.youtube_analysis.stats import increment_summary_count, get_summary_count, get_user_stats
 
 # LangGraph and LangChain imports for chat functionality
 from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
@@ -2717,22 +2719,29 @@ def main():
             """, unsafe_allow_html=True)
         
         # User account section - moved to bottom
-        st.markdown("<hr style='margin: 1.5rem 0;'>", unsafe_allow_html=True)
-        
-        with st.expander("👤 User Account", expanded=False):
-            # Get current user
+        st.sidebar.markdown("<hr style='margin: 1.5rem 0;'>", unsafe_allow_html=True)
+        with st.sidebar.expander("👤 User Account", expanded=False):
             user = get_current_user()
-            
             if user:
-                st.markdown(f"<p style='margin-bottom: 1rem;'>Logged in as: <b>{user.email}</b></p>", unsafe_allow_html=True)
-                if st.button("🚪 Logout"):
-                    logout()
-                    st.rerun()
+                st.write(f"**Email:** {user.email}")
+                
+                # Display user statistics
+                stats = get_user_stats()
+                if stats:
+                    st.markdown("### Your Statistics")
+                    st.metric("Summaries Generated", stats.get("summary_count", 0))
+                    
+                    # Add more stats here as they become available
+                    
+                if st.button("Logout", key="sidebar_logout"):
+                    from src.youtube_analysis.auth import logout
+                    if logout():
+                        st.rerun()
             else:
-                st.markdown("<p style='margin-bottom: 1rem;'>Not logged in</p>", unsafe_allow_html=True)
-                if st.button("🔑 Login/Sign Up"):
+                st.info("You are not logged in")
+                if st.button("Login/Sign Up", key="sidebar_login"):
                     st.session_state.show_auth = True
-
+        
         with st.expander("⚙️ Settings", expanded=False):
             # Model selection
             st.markdown("<h3 style='margin-bottom: 0.5rem;'>AI Model</h3>", unsafe_allow_html=True)
@@ -2779,28 +2788,28 @@ def main():
         os.environ["LLM_MODEL"] = model
         os.environ["LLM_TEMPERATURE"] = str(temperature)
         
-        # Reset chat button (if chat is enabled)
-        if st.session_state.chat_enabled:
-            if st.button("🔄 Reset Chat", key="reset_chat"):
-                st.session_state.chat_messages = []
-                # Re-initialize welcome message
-                if st.session_state.chat_details and "title" in st.session_state.chat_details:
-                    video_title = st.session_state.chat_details.get("title", "this YouTube video")
-                    welcome_message = f"Hello! I'm your AI assistant for the video \"{video_title}\". Ask me any questions about the content, and I'll do my best to answer based on the transcript. I'll include timestamps [MM:SS] in my answers to help you locate information in the video."
-                    
-                    st.session_state.chat_messages = [
-                        {
-                            "role": "assistant", 
-                            "content": welcome_message
-                        }
-                    ]
-                st.rerun()
         
         # Reset analysis button (if analysis is complete)
         if st.session_state.analysis_complete:
             # Analysis settings section
             st.markdown("<hr style='margin: 1.5rem 0;'>", unsafe_allow_html=True)
             st.markdown("<h3 style='margin-bottom: 1rem;'>Analysis Options</h3>", unsafe_allow_html=True)
+            # Reset chat button (if chat is enabled)
+            if st.session_state.chat_enabled:
+                if st.button("🔄 Reset Chat", key="reset_chat"):
+                    st.session_state.chat_messages = []
+                    # Re-initialize welcome message
+                    if st.session_state.chat_details and "title" in st.session_state.chat_details:
+                        video_title = st.session_state.chat_details.get("title", "this YouTube video")
+                        welcome_message = f"Hello! I'm your AI assistant for the video \"{video_title}\". Ask me any questions about the content, and I'll do my best to answer based on the transcript. I'll include timestamps [MM:SS] in my answers to help you locate information in the video."
+                        
+                        st.session_state.chat_messages = [
+                            {
+                                "role": "assistant", 
+                                "content": welcome_message
+                            }
+                        ]
+                    st.rerun()
         
             if st.button("🔄 New Analysis", key="new_analysis"):
                 # Reset all relevant state
@@ -2873,42 +2882,26 @@ def main():
            st.markdown("<h3 style='text-align: center; width: 100%;'>Paste your YouTube link</h3>", unsafe_allow_html=True)
            url = st.text_input("YouTube URL", placeholder="https://www.youtube.com/watch?v=...", label_visibility="collapsed") 
         
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("""
-            <div style="text-align: center;">
-            <h2>🎯 How Skimr Works</h2>
-            
-            <ul style="list-style-type: none; text-align: justify;">
-                <li><strong>Skimr</strong> turns YouTube videos into <em>bite-sized insights</em>.</li>
-                <li>Generates <strong>summaries</strong>, <strong>action plans</strong>, and <strong>ready-to-share content</strong>.</li>
-                <li>Paste the link. <strong>We handle the rest</strong>.</li>
-            </ul>
-
-            <p><strong>Spend less time watching. More time discovering.</strong></p>
-            </div>
-            """, unsafe_allow_html=True)
-
-        with col2:
-            st.markdown("""
-            <div style="text-align: center;">
-            <h2>🚀 What You'll Get</h2>
-            <ul style="list-style-type: none; text-align: justify;">
-                <li>✅ <strong>TL;DR Magic:</strong> 10x faster than watching the video</li>
-                <li>✅ <strong>Ask & Receive:</strong> Get answers instantly</li>
-                <li>✅ <strong>Copy-paste content</strong> for Blogs, LinkedIn, X</li>
-                <li>✅ <strong>Actionable plans</strong> from passive watching</li>
-            </ul>
-            </div>
-            """, unsafe_allow_html=True)
- 
         # Handle form submission
         if url:
             if not validate_youtube_url(url):
                 st.error("Please enter a valid YouTube URL")
             elif not st.session_state.authenticated:
-                st.warning("Please log in to analyze videos")
-                st.session_state.show_auth = True
+                # Instead of showing the warning immediately, start the analysis process
+                # and then prompt for login before completing the analysis
+                with st.spinner("Preparing to analyze video..."):
+                    # Get video info to show the user what they're about to analyze
+                    video_info = get_video_info(url)
+                    if video_info:
+                        # Show login prompt
+                        st.warning("Please log in to analyze this video")
+                        st.session_state.show_auth = True
+                        
+                        # Add a button to show auth UI in case they closed it
+                        if st.button("Login/Sign Up"):
+                            st.session_state.show_auth = True
+                    else:
+                        st.error("Could not fetch video information. Please check the URL and try again.")
             else:
                 # Rest of the analysis code...
                 with st.spinner("Analyzing video..."):
@@ -3165,7 +3158,28 @@ def main():
                             st.success("Analysis complete!")
                             logger.info(f"Analysis completed successfully for video: {url}")
                             
-                            # Force a rerun to update the UI
+                            # Track analysis completion time
+                            st.session_state.analysis_complete = True
+                            
+                            # Increment the user's summary count
+                            logger.info("About to increment user summary count")
+                            user = get_current_user()
+                            logger.info(f"Current user: {user if user else 'None'}")
+                            
+                            if user and hasattr(user, 'id'):
+                                logger.info(f"Current user found: {user.id}, {user.email}")
+                                try:
+                                    success = increment_summary_count(user.id)
+                                    if success:
+                                        logger.info(f"Incremented summary count for user {user.id}")
+                                    else:
+                                        logger.warning(f"Failed to increment summary count for user {user.id}")
+                                except Exception as count_error:
+                                    logger.error(f"Exception incrementing summary count: {str(count_error)}")
+                            else:
+                                logger.warning("Cannot increment summary count: No valid user is logged in")
+                            
+                            # Rerun the app to update UI with results
                             st.rerun()
                         except Exception as analysis_error:
                             logger.exception(f"Exception during analysis: {str(analysis_error)}")
@@ -3176,6 +3190,7 @@ def main():
                         st.error(f"An error occurred: {str(e)}")
                         return
         
+
         # If URL is provided, show video info
         if url and validate_youtube_url(url):
             try:
@@ -3201,9 +3216,7 @@ def main():
                 
                 # Display video info with improved styling
                 st.markdown("""
-                <div style="background: #232323; padding: 1.5rem; border-radius: 12px; border: 1px solid #333333; margin: 1.5rem 0; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);">
-                    <h3 style="color: #4dabf7; margin-bottom: 1rem;">Video Details</h3>
-                </div>
+                <h3 style="color: #4dabf7;">Video Details</h3>
                 """, unsafe_allow_html=True)
                 
                 col1, col2 = st.columns([2, 1])
@@ -3219,7 +3232,36 @@ def main():
                 return
         
         # Display features and how it works sections
-        if not url:    
+        if not url:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("""
+                <div style="text-align: center;">
+                <h2>🎯 How Skimr Works</h2>
+                
+                <ul style="list-style-type: none; text-align: justify;">
+                    <li><strong>Skimr</strong> turns YouTube videos into <em>bite-sized insights</em>.</li>
+                    <li>Generates <strong>summaries</strong>, <strong>action plans</strong>, and <strong>ready-to-share content</strong>.</li>
+                    <li>Paste the link. <strong>We handle the rest</strong>.</li>
+                </ul>
+
+                <p><strong>Spend less time watching. More time discovering.</strong></p>
+                </div>
+                """, unsafe_allow_html=True)
+
+            with col2:
+                st.markdown("""
+                <div style="text-align: center;">
+                <h2>🚀 What You'll Get</h2>
+                <ul style="list-style-type: none; text-align: justify;">
+                    <li>✅ <strong>TL;DR Magic:</strong> 10x faster than watching the video</li>
+                    <li>✅ <strong>Ask & Receive:</strong> Get answers instantly</li>
+                    <li>✅ <strong>Copy-paste content</strong> for Blogs, LinkedIn, X</li>
+                    <li>✅ <strong>Actionable plans</strong> from passive watching</li>
+                </ul>
+                </div>
+                """, unsafe_allow_html=True)
+    
                 
             # Use cases section with improved styling
             st.markdown("""
