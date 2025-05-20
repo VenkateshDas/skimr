@@ -1,4 +1,4 @@
-FROM python:3.10-slim AS builder
+FROM python:3.10 AS builder
 
 WORKDIR /app
 
@@ -18,7 +18,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 # Second stage: final image
-FROM python:3.10-slim
+FROM python:3.10
 
 WORKDIR /app
 
