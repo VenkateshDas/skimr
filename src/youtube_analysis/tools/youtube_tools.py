@@ -1,10 +1,15 @@
 from crewai.tools import BaseTool
 from typing import Dict, Optional, List, Any, Union
+import asyncio
 
 from ..utils.logging import get_logger
-from ..utils.youtube_utils import get_transcript
+from ..core import YouTubeClient, CacheManager
 
 logger = get_logger("tools.youtube")
+
+# Initialize core components
+cache_manager = CacheManager()
+youtube_client = YouTubeClient(cache_manager)
 
 class YouTubeTranscriptionTool(BaseTool):
     name: str = "YouTube Transcription Tool"
@@ -22,8 +27,8 @@ class YouTubeTranscriptionTool(BaseTool):
         """
         logger.info(f"Using YouTube Transcription Tool for URL: {youtube_url}")
         try:
-            # Use the utility function to get the transcript
-            transcript = get_transcript(youtube_url)
+            # Use the YouTubeClient to get the transcript
+            transcript = asyncio.run(youtube_client.get_transcript(youtube_url))
             return transcript
         except Exception as e:
             error_message = f"Error fetching transcription: {str(e)}"

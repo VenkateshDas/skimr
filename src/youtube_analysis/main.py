@@ -1,13 +1,18 @@
 import sys
 import traceback
+import asyncio
 from typing import Optional, Dict, Any, Union, Tuple
 from datetime import datetime
 
 from .crew import YouTubeAnalysisCrew
 from .utils.logging import get_logger
-from .utils.youtube_utils import get_transcript, extract_video_id
+from .core import YouTubeClient, CacheManager
 
 logger = get_logger("main")
+
+# Initialize core components
+cache_manager = CacheManager()
+youtube_client = YouTubeClient(cache_manager)
 
 def run() -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """
@@ -28,11 +33,11 @@ def run() -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         logger.info(f"User provided URL: {youtube_url}")
 
         # Extract video ID for metadata
-        video_id = extract_video_id(youtube_url)
+        video_id = youtube_client.extract_video_id(youtube_url)
         logger.info(f"Extracted video ID: {video_id}")
 
         # Get the transcript from the YouTube URL
-        transcript = get_transcript(youtube_url)
+        transcript = asyncio.run(youtube_client.get_transcript(youtube_url))
         logger.info(f"Successfully fetched transcript with {len(transcript)} characters")
         
         # Create and run the crew

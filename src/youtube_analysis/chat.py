@@ -6,27 +6,31 @@ from typing import Dict, Any, Optional, List
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_openai import OpenAIEmbeddings
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import Tool
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage, BaseMessage
 from langgraph.prebuilt import create_react_agent
 from langchain.schema import Document
-from langchain_anthropic import ChatAnthropic
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_tavily import TavilySearch
 import streamlit as st
 import os
+import asyncio
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
 from .utils.logging import get_logger
-from .utils.youtube_utils import extract_video_id, get_video_info
+from .core import LLMManager, YouTubeClient, CacheManager
 
 # Configure logging
 logger = get_logger("chat")
+
+# Initialize core components
+llm_manager = LLMManager()
+cache_manager = CacheManager()
+youtube_client = YouTubeClient(cache_manager)
 
 def create_vectorstore(text: str, transcript_list: Optional[List[Dict[str, Any]]] = None) -> FAISS:
     """
@@ -143,7 +147,7 @@ def create_agent_graph(vectorstore: FAISS, video_metadata: Dict[str, Any], has_t
     Returns:
         A LangGraph agent
     """
-    # Create language model
+    # Create language model using LLMManager
     # Get model settings from streamlit session state if available, otherwise use env vars
     if "settings" in st.session_state and st.session_state.settings:
         model_name = st.session_state.settings.get("model", os.environ.get("LLM_MODEL", "gpt-4o-mini"))
@@ -151,14 +155,13 @@ def create_agent_graph(vectorstore: FAISS, video_metadata: Dict[str, Any], has_t
     else:
         model_name = os.environ.get("LLM_MODEL", "gpt-4o-mini")
         temperature = float(os.environ.get("LLM_TEMPERATURE", "0.2"))
+    
     logger.info(f"Creating chat agent with model: {model_name}, temperature: {temperature}")
-    if model_name.startswith("gpt"):
-        llm = ChatOpenAI(temperature=temperature, model=model_name)
-    elif model_name.startswith("claude"):
-        llm = ChatAnthropic(temperature=temperature, model=model_name, api_key=os.getenv("ANTHROPIC_API_KEY"))
-    elif model_name.startswith("gemini"):
-        # Format the model name to include the 'gemini/' prefix for LiteLLM
-        llm = ChatGoogleGenerativeAI(temperature=temperature, model=model_name, api_key=os.getenv("GEMINI_API_KEY"))
+    
+    # Use LLMManager to get the language model
+    from .core.llm_manager import LLMConfig
+    config = LLMConfig(model=model_name, temperature=temperature)
+    llm = llm_manager.get_langchain_llm(config)
 
     # Create Tavily search tool
     search_tool = TavilySearch(
@@ -334,7 +337,7 @@ def setup_chat_for_video(youtube_url: str, transcript: str, transcript_list: Opt
     """
     try:
         # Extract video ID
-        video_id = extract_video_id(youtube_url)
+        video_id = youtube_client.extract_video_id(youtube_url)
         if not video_id:
             logger.error(f"Failed to extract video ID from URL: {youtube_url}")
             return None
@@ -348,14 +351,21 @@ def setup_chat_for_video(youtube_url: str, transcript: str, transcript_list: Opt
         # Get video information from the already retrieved data
         try:
             # Use the video_id to get video info
-            video_info = get_video_info(youtube_url)
+            video_info_obj = asyncio.run(youtube_client.get_video_info(youtube_url))
             
-            if not video_info:
+            if not video_info_obj:
                 logger.warning(f"Could not get video info for {video_id}, using default values")
                 video_info = {
                     'video_id': video_id,
                     'title': f"YouTube Video ({video_id})",
                     'description': "Video description unavailable.",
+                    'url': youtube_url
+                }
+            else:
+                video_info = {
+                    'video_id': video_id,
+                    'title': video_info_obj.title,
+                    'description': video_info_obj.description,
                     'url': youtube_url
                 }
             

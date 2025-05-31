@@ -2,20 +2,24 @@
 
 import re
 import copy
+import asyncio
 from typing import Dict, Any, Optional, Tuple, List
 from datetime import datetime
 import os
 
 from .utils.logging import get_logger
-from .utils.youtube_utils import extract_video_id, get_transcript, get_video_info
-from .utils.cache_utils import get_cached_analysis, cache_analysis
 from .utils.video_highlights import generate_highlights_video, get_cached_highlights_video, cache_highlights_video
+from .core import CacheManager, YouTubeClient
 from .crew import YouTubeAnalysisCrew
 from .transcript import get_transcript_with_timestamps
 from .chat import setup_chat_for_video
 
 # Configure logging
 logger = get_logger("analysis")
+
+# Initialize core components
+cache_manager = CacheManager()
+youtube_client = YouTubeClient(cache_manager)
 
 def extract_category(output: str) -> str:
     """
@@ -92,7 +96,7 @@ def run_analysis(youtube_url: str, progress_callback=None, status_callback=None,
             analysis_types = tuple(analysis_types) 
 
         # Extract video ID for thumbnail
-        video_id = extract_video_id(youtube_url)
+        video_id = youtube_client.extract_video_id(youtube_url)
         logger.info(f"Extracted video ID: {video_id} from URL: {youtube_url}")
         logger.debug(f"use_cache setting: {use_cache}")
         
@@ -100,7 +104,7 @@ def run_analysis(youtube_url: str, progress_callback=None, status_callback=None,
         cached_results = None
         if use_cache:
             logger.info(f"Checking for cached analysis for video ID: {video_id}")
-            cached_results = get_cached_analysis(video_id, force_bypass=False)
+            cached_results = cache_manager.get("analysis", f"analysis_{video_id}")
         else:
             # If use_cache is False, force bypass the cache completely
             logger.info(f"Cache usage disabled, forcing new analysis for video {video_id}")
@@ -139,7 +143,7 @@ def run_analysis(youtube_url: str, progress_callback=None, status_callback=None,
             # We need to recreate the chat agent since it's not serializable
             try:
                 # Get the transcript
-                transcript = get_transcript(youtube_url)
+                transcript = asyncio.run(youtube_client.get_transcript(youtube_url))
                 
                 # Get transcript with timestamps
                 try:
@@ -174,7 +178,7 @@ def run_analysis(youtube_url: str, progress_callback=None, status_callback=None,
             status_callback("Fetching video transcript...")
         
         # Get the transcript
-        transcript = get_transcript(youtube_url)
+        transcript = asyncio.run(youtube_client.get_transcript(youtube_url))
         
         if progress_callback:
             progress_callback(15)
@@ -221,7 +225,8 @@ def run_analysis(youtube_url: str, progress_callback=None, status_callback=None,
             
             # Get current date and time
             current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            video_title = get_video_info(youtube_url)["title"]
+            video_info = asyncio.run(youtube_client.get_video_info(youtube_url))
+            video_title = video_info.title if video_info else "Unknown Video"
             
             # Start the crew execution
             inputs = {"youtube_url": youtube_url, "transcript": transcript, "current_datetime": current_datetime, "video_title": video_title}
@@ -358,7 +363,7 @@ def run_analysis(youtube_url: str, progress_callback=None, status_callback=None,
                 # Create a deep copy to avoid modifying the original results
                 results_to_cache = copy.deepcopy(results)
                 logger.info(f"Caching analysis results for video {video_id}")
-                cache_analysis(video_id, results_to_cache)
+                cache_manager.set("analysis", f"analysis_{video_id}", results_to_cache)
                 logger.info(f"Successfully cached analysis results")
             except Exception as e:
                 logger.warning(f"Error caching analysis results: {str(e)}")
@@ -405,7 +410,7 @@ def run_direct_analysis(youtube_url: str, plain_transcript: str, progress_callba
     """
     try:
         # Extract video ID for thumbnail
-        video_id = extract_video_id(youtube_url)
+        video_id = youtube_client.extract_video_id(youtube_url)
         
         # Update progress
         if progress_callback:
@@ -414,7 +419,8 @@ def run_direct_analysis(youtube_url: str, plain_transcript: str, progress_callba
             status_callback("Analyzing video content...")
         
         # Get video info
-        video_info = get_video_info(youtube_url)
+        video_info_obj = asyncio.run(youtube_client.get_video_info(youtube_url))
+        video_info = {"title": video_info_obj.title if video_info_obj else "Unknown Video"}
         
         # Create and run the crew
         import os
@@ -501,7 +507,7 @@ def run_direct_analysis(youtube_url: str, plain_transcript: str, progress_callba
         try:
             # Create a deep copy to avoid modifying the original results
             results_to_cache = copy.deepcopy(results)
-            cache_analysis(video_id, results_to_cache)
+            cache_manager.set("analysis", f"analysis_{video_id}", results_to_cache)
         except Exception as e:
             logger.warning(f"Error caching analysis results: {str(e)}")
         
@@ -538,7 +544,7 @@ def generate_video_highlights(youtube_url: str, max_highlights: int = 5, progres
     """
     try:
         # Extract video ID
-        video_id = extract_video_id(youtube_url)
+        video_id = youtube_client.extract_video_id(youtube_url)
         if not video_id:
             error_msg = f"Invalid YouTube URL: {youtube_url}"
             logger.error(error_msg)

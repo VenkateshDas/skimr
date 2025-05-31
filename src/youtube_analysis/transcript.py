@@ -1,14 +1,18 @@
 """Utility functions for handling YouTube video transcripts with timestamps."""
 
 import re
+import asyncio
 from typing import Dict, List, Tuple, Any, Optional
-from youtube_transcript_api import YouTubeTranscriptApi
 
 from .utils.logging import get_logger
-from .utils.youtube_utils import extract_video_id
+from .core import YouTubeClient, CacheManager
 
 # Configure logging
 logger = get_logger("transcript")
+
+# Initialize core components
+cache_manager = CacheManager()
+youtube_client = YouTubeClient(cache_manager)
 
 def get_transcript_with_timestamps(youtube_url: str) -> Tuple[str, List[Dict[str, Any]]]:
     """
@@ -26,28 +30,14 @@ def get_transcript_with_timestamps(youtube_url: str) -> Tuple[str, List[Dict[str
         ValueError: If the transcript cannot be retrieved
     """
     try:
-        # Extract video ID
-        video_id = extract_video_id(youtube_url)
+        # Use the YouTube client to get transcript with timestamps
+        logger.info(f"Fetching transcript with timestamps for {youtube_url}")
+        result = asyncio.run(youtube_client.get_transcript_with_timestamps(youtube_url))
         
-        # Fetch transcript with timestamps
-        logger.info(f"Fetching transcript with timestamps for video {video_id}")
-        transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', "de", "ta"])
+        if result[0] is None or result[1] is None:
+            raise ValueError("Could not retrieve transcript with timestamps")
         
-        # Format transcript with timestamps
-        formatted_transcript = []
-        for item in transcript_list:
-            # Convert seconds to MM:SS format
-            seconds = int(item['start'])
-            minutes, seconds = divmod(seconds, 60)
-            timestamp = f"{minutes:02d}:{seconds:02d}"
-            
-            # Add timestamp and text
-            formatted_transcript.append(f"[{timestamp}] {item['text']}")
-        
-        # Join transcript segments with newlines
-        transcript_text = "\n".join(formatted_transcript)
-        
-        return transcript_text, transcript_list
+        return result
         
     except Exception as e:
         error_msg = f"Error retrieving transcript with timestamps: {str(e)}"

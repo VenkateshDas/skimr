@@ -6,13 +6,11 @@ from pydantic import Field
 import os
 
 from .utils.logging import get_logger
+from .core import LLMManager
 
 from dotenv import load_dotenv
 load_dotenv()
 
-from langchain_openai import ChatOpenAI
-from langchain_anthropic import ChatAnthropic
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_tavily import TavilySearch
 logger = get_logger("crew")
 
@@ -38,15 +36,11 @@ class YouTubeAnalysisCrew:
     
     def __init__(self, model_name="gpt-4o-mini", temperature=0.2):
         logger.info(f"Initializing YouTubeAnalysisCrew with model: {model_name}, temperature: {temperature}")
-        if model_name.startswith("gpt"):
-            self.llm = ChatOpenAI(model=model_name, temperature=temperature)
-        elif model_name.startswith("claude"):
-            anthropic_model = f"anthropic/{model_name}"
-            self.llm = LLM(model=anthropic_model, temperature=temperature, api_key=os.getenv("ANTHROPIC_API_KEY"))
-        elif model_name.startswith("gemini"):
-            # Format the model name to include the 'gemini/' prefix for LiteLLM
-            gemini_model = f"gemini/{model_name}"
-            self.llm = LLM(model=gemini_model, temperature=temperature, api_key=os.getenv("GEMINI_API_KEY"))
+        self.llm_manager = LLMManager()
+        # Get CrewAI LLM instance
+        from .core.llm_manager import LLMConfig
+        config = LLMConfig(model=model_name, temperature=temperature)
+        self.llm = self.llm_manager.get_crewai_llm(config)
 
     @agent
     def classifier_agent(self) -> Agent:

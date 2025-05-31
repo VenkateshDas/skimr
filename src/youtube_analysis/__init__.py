@@ -15,15 +15,10 @@ from .crew import YouTubeAnalysisCrew
 from .chat import setup_chat_for_video
 from .transcript import get_transcript_with_timestamps
 from .ui import get_category_class, extract_youtube_thumbnail, load_css, setup_sidebar, create_welcome_message, setup_user_menu
-from .utils.youtube_utils import (
-    extract_video_id, 
-    get_transcript, 
-    get_video_info, 
-    validate_youtube_url,
-    get_cached_transcription,
-    cache_transcription
-)
-from .utils.cache_utils import get_cached_analysis, cache_analysis, clear_analysis_cache
+from .core import CacheManager, LLMManager, YouTubeClient
+
+# For backward compatibility, still export some utils
+from .utils.youtube_utils import validate_youtube_url, get_cached_transcription, cache_transcription
 
 # Export these functions and classes
 __all__ = [
@@ -60,18 +55,15 @@ __all__ = [
     'create_welcome_message',
     'setup_user_menu',
     
-    # YouTube Utilities
-    'extract_video_id',
-    'get_transcript',
-    'get_video_info',
+    # Core Components
+    'CacheManager',
+    'LLMManager', 
+    'YouTubeClient',
+    
+    # Backward compatibility utilities
     'validate_youtube_url',
     'get_cached_transcription',
-    'cache_transcription',
-    
-    # Cache Utilities
-    'get_cached_analysis',
-    'cache_analysis',
-    'clear_analysis_cache'
+    'cache_transcription'
 ]
 
 # Set up package-level logger

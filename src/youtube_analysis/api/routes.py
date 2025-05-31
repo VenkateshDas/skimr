@@ -4,13 +4,12 @@ from typing import Dict, Any, Optional, List
 
 from youtube_analysis.models.analysis import AnalysisRequest, AnalysisResponse
 from youtube_analysis.services.analysis_service import analyze_youtube_video
-from youtube_analysis.utils.cache_utils import (
-    get_cached_analysis,
-    cache_analysis,
-    clear_analysis_cache,
-)
+from ..core import CacheManager
 
 router = APIRouter()
+
+# Initialize core components
+cache_manager = CacheManager()
 
 @router.post("/analyze")
 async def analyze_video(request: AnalysisRequest) -> AnalysisResponse:
@@ -28,7 +27,7 @@ async def analyze_video(request: AnalysisRequest) -> AnalysisResponse:
     
     # Check cache first if enabled
     if use_cache:
-        cached_result = get_cached_analysis(video_id)
+        cached_result = cache_manager.get("analysis", f"analysis_{video_id}")
         if cached_result:
             return AnalysisResponse(
                 video_id=video_id,
@@ -42,7 +41,7 @@ async def analyze_video(request: AnalysisRequest) -> AnalysisResponse:
         
         # Cache the result
         if use_cache:
-            cache_analysis(video_id, analysis_result)
+            cache_manager.set("analysis", f"analysis_{video_id}", analysis_result)
         
         return AnalysisResponse(
             video_id=video_id,
@@ -63,7 +62,7 @@ async def clear_cache(video_id: str) -> dict:
     Returns:
         A dictionary with the status of the operation
     """
-    success = clear_analysis_cache(video_id)
+    success = cache_manager.delete("analysis", f"analysis_{video_id}")
     
     if success:
         return {"status": "success", "message": f"Cache cleared for video {video_id}"}
