@@ -16,7 +16,24 @@ youtube_client = YouTubeClient(cache_manager)
 
 def get_transcript_with_timestamps(youtube_url: str) -> Tuple[str, List[Dict[str, Any]]]:
     """
-    Get the transcript of a YouTube video with timestamps.
+    Get the transcript of a YouTube video with timestamps (sync wrapper).
+    
+    Args:
+        youtube_url: The URL of the YouTube video
+        
+    Returns:
+        A tuple containing:
+        - The formatted transcript as a string with timestamps
+        - The raw transcript list for further processing
+        
+    Raises:
+        ValueError: If the transcript cannot be retrieved
+    """
+    return asyncio.run(get_transcript_with_timestamps_async(youtube_url))
+
+async def get_transcript_with_timestamps_async(youtube_url: str) -> Tuple[str, List[Dict[str, Any]]]:
+    """
+    Get the transcript of a YouTube video with timestamps (async).
     
     Args:
         youtube_url: The URL of the YouTube video
@@ -32,7 +49,7 @@ def get_transcript_with_timestamps(youtube_url: str) -> Tuple[str, List[Dict[str
     try:
         # Use the YouTube client to get transcript with timestamps
         logger.info(f"Fetching transcript with timestamps for {youtube_url}")
-        result = asyncio.run(youtube_client.get_transcript_with_timestamps(youtube_url))
+        result = await youtube_client.get_transcript_with_timestamps(youtube_url)
         
         if result[0] is None or result[1] is None:
             raise ValueError("Could not retrieve transcript with timestamps")

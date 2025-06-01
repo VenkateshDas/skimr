@@ -11,10 +11,11 @@ __version__ = "0.1.0"
 from .utils.logging import get_logger
 from .auth import init_auth_state, login, init_supabase, display_auth_ui, get_current_user, logout, require_auth, check_guest_usage
 from .analysis import run_analysis, run_direct_analysis, extract_category
+from .analysis_v2 import run_analysis_v2, get_performance_stats
 from .crew import YouTubeAnalysisCrew
 from .chat import setup_chat_for_video
 from .transcript import get_transcript_with_timestamps
-from .ui import get_category_class, extract_youtube_thumbnail, load_css, setup_sidebar, create_welcome_message, setup_user_menu
+from .ui_legacy import get_category_class, extract_youtube_thumbnail, load_css, setup_sidebar, create_welcome_message, setup_user_menu
 from .core import CacheManager, LLMManager, YouTubeClient
 
 # For backward compatibility, still export some utils
@@ -37,8 +38,10 @@ __all__ = [
     
     # Analysis
     'run_analysis',
+    'run_analysis_v2',
     'run_direct_analysis',
     'extract_category',
+    'get_performance_stats',
     'YouTubeAnalysisCrew',
     
     # Chat

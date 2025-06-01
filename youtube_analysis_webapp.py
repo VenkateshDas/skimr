@@ -14,6 +14,7 @@ import html
 import uuid
 import concurrent.futures
 import threading
+import asyncio
 import markdown
 import base64
 from reportlab.lib.pagesizes import letter
@@ -35,7 +36,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '.'))
 from src.youtube_analysis.config import APP_VERSION, validate_config, setup_logging
 
 # Import the YouTube Analysis modules
-from src.youtube_analysis import run_analysis
+from src.youtube_analysis import run_analysis, run_analysis_v2, get_performance_stats
 from src.youtube_analysis.utils.youtube_utils import (
     get_transcript, 
     extract_video_id, 
@@ -48,8 +49,21 @@ from src.youtube_analysis.utils.youtube_utils import (
 from src.youtube_analysis.utils.cache_utils import get_cached_analysis, cache_analysis, clear_analysis_cache
 from src.youtube_analysis.utils.logging import get_logger
 from src.youtube_analysis.auth import init_auth_state, display_auth_ui, get_current_user, logout, require_auth
-from src.youtube_analysis.ui import load_css, setup_sidebar, create_welcome_message, setup_user_menu, display_video_highlights
+from src.youtube_analysis.ui_legacy import load_css, setup_sidebar, create_welcome_message, setup_user_menu, display_video_highlights
 from src.youtube_analysis.analysis import generate_video_highlights
+
+# Import Phase 2 Architecture Components
+from src.youtube_analysis.service_factory import get_service_factory
+from src.youtube_analysis.models import VideoData, AnalysisResult, ChatSession, VideoInfo as VideoInfoModel
+from src.youtube_analysis.services import (
+    AnalysisService,
+    TranscriptService,
+    ChatService,
+    ContentService
+)
+from src.youtube_analysis.repositories import CacheRepository, YouTubeRepository
+from src.youtube_analysis.workflows import VideoAnalysisWorkflow
+from src.youtube_analysis.analysis_v2 import cleanup_analysis_resources
 from src.youtube_analysis.stats import increment_summary_count, get_summary_count, get_user_stats
 
 # LangGraph and LangChain imports for chat functionality
@@ -182,7 +196,31 @@ def process_transcript_async(url: str, use_cache: bool = True) -> Tuple[Optional
             if cached_transcript:
                 logger.info(f"Using cached transcript for video ID: {video_id}")
                 
-                # Format the cached transcript with timestamps
+                # First, check if we're using Phase 2 architecture
+                use_optimized = os.environ.get("USE_OPTIMIZED_ANALYSIS", "true").lower() in ("true", "1", "yes")
+                if use_optimized:
+                    try:
+                        # Try to use the transcript service from Phase 2 architecture
+                        transcript_service = get_service_factory().get_transcript_service()
+                        video_data = transcript_service.get_video_data_sync(video_id)
+                        if video_data and video_data.transcript_segments:
+                            logger.info("Successfully retrieved transcript using Phase 2 architecture")
+                            
+                            # Format transcript with timestamps
+                            timestamped_transcript = ""
+                            for item in video_data.transcript_segments:
+                                start = item.get('start', 0)
+                                minutes, seconds = divmod(int(start), 60)
+                                timestamp = f"[{minutes:02d}:{seconds:02d}]"
+                                text = item.get('text', '')
+                                timestamped_transcript += f"{timestamp} {text}\n"
+                            
+                            return timestamped_transcript, video_data.transcript_segments, None
+                    except Exception as e:
+                        logger.warning(f"Could not retrieve transcript using Phase 2 architecture: {str(e)}")
+                        # Fall back to Phase 1 approach
+                
+                # If Phase 2 approach failed or not enabled, try Phase 1 approach
                 try:
                     # Get transcript list to reconstruct the timestamped version
                     from youtube_transcript_api import YouTubeTranscriptApi
@@ -199,8 +237,32 @@ def process_transcript_async(url: str, use_cache: bool = True) -> Tuple[Optional
                     
                     return timestamped_transcript, transcript_list, None
                 except Exception as e:
-                    # If we can't get the transcript list, just use the cached transcript
+                    # If we can't get the transcript list, try to parse the cached transcript
                     logger.warning(f"Could not format cached transcript with timestamps: {str(e)}")
+                    
+                    # Try to extract timestamps from the cached transcript if it has them
+                    if "[" in cached_transcript and "]" in cached_transcript:
+                        logger.info("Using cached transcript that appears to have timestamps")
+                        
+                        # Try to reconstruct transcript_list from the timestamped transcript
+                        transcript_list = []
+                        lines = cached_transcript.strip().split('\n')
+                        for line in lines:
+                            # Parse lines like "[MM:SS] Text content"
+                            match = re.match(r'\[(\d+):(\d+)\]\s*(.*)', line)
+                            if match:
+                                minutes, seconds, text = match.groups()
+                                start_time = int(minutes) * 60 + int(seconds)
+                                transcript_list.append({
+                                    'start': start_time,
+                                    'duration': 5.0,  # Approximate duration
+                                    'text': text
+                                })
+                        
+                        if transcript_list:
+                            return cached_transcript, transcript_list, None
+                    
+                    # If all else fails, return just the cached transcript
                     return cached_transcript, None, None
         
         # Try to get transcript with timestamps
@@ -816,17 +878,27 @@ def display_chat_interface():
         """, unsafe_allow_html=True)
         return
     
-    # Get chat details from session state
-    chat_details = st.session_state.chat_details
-    
-    # Handle errors in chat details
-    if not chat_details:
+    # Get chat details from session state and check if it's a valid dictionary
+    if not hasattr(st.session_state, 'chat_details') or st.session_state.chat_details is None:
         st.markdown("""
         <div style="background: rgba(255, 177, 66, 0.2); border-left: 4px solid #ffb142; padding: 1.5rem; border-radius: 4px; margin-bottom: 1rem; height: 380px; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center;">
             <h3 style="margin-top: 0; color: #ffb142;">Chat Details Not Found</h3>
-            <p style="color: #e0e0e0;">Please analyze a video first to enable the chat functionality.</p>
+            <p style="color: #e0e0e0;">There was an issue setting up the chat. This might be due to problems retrieving the video transcript.</p>
         </div>
         """, unsafe_allow_html=True)
+        return
+    
+    chat_details = st.session_state.chat_details
+    
+    # Handle errors in chat details - check if it's a dictionary
+    if not chat_details or not isinstance(chat_details, dict):
+        st.markdown("""
+        <div style="background: rgba(255, 177, 66, 0.2); border-left: 4px solid #ffb142; padding: 1.5rem; border-radius: 4px; margin-bottom: 1rem; height: 380px; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center;">
+            <h3 style="margin-top: 0; color: #ffb142;">Invalid Chat Details</h3>
+            <p style="color: #e0e0e0;">There was an issue with the chat setup. Please try analyzing the video again.</p>
+        </div>
+        """, unsafe_allow_html=True)
+        logger.error(f"Invalid chat_details type: {type(chat_details)}. Expected dictionary.")
         return
     
     # Create a container for the chat messages with a fixed height
@@ -968,8 +1040,17 @@ def display_chat_interface():
                 st.session_state.is_processing_message = False
                 logger.info("Streaming state reset")
     
+    # Generate a unique key for the chat input using combination of video ID and a stable hash
+    video_id = st.session_state.get('video_id', 'default')
+    # Use a stable identifier that won't change between reruns
+    # This will ensure we only have one chat input per video
+    stable_key = f"chat_input_{video_id}"
+    
     # Add a user input field outside the message container
-    user_input = st.chat_input("Ask a question about the video...")
+    user_input = st.chat_input(
+        "Ask a question about the video...", 
+        key=stable_key
+    )
     
     # Handle user input
     if user_input:
@@ -1116,6 +1197,26 @@ def handle_chat_input():
         try:
             # Get chat details from session state
             chat_details = st.session_state.chat_details
+            
+            # Check if chat_details is valid
+            if not isinstance(chat_details, dict):
+                logger.error(f"Invalid chat_details type: {type(chat_details)}. Expected dictionary.")
+                
+                # Replace thinking message with error message
+                if st.session_state.chat_messages and st.session_state.chat_messages[-1]["role"] == "thinking":
+                    st.session_state.chat_messages[-1] = {
+                        "role": "assistant",
+                        "content": "Sorry, the chat functionality is experiencing issues. Please try analyzing the video again."
+                    }
+                else:
+                    st.session_state.chat_messages.append({
+                        "role": "assistant",
+                        "content": "Sorry, the chat functionality is experiencing issues. Please try analyzing the video again."
+                    })
+                
+                st.session_state.is_processing_message = False
+                return
+                
             agent = chat_details.get("agent")
             
             if agent is None:
@@ -1582,8 +1683,20 @@ def display_analysis_results(results: Dict[str, Any]):
     with video_chat_cols[1]:
         # Display chat interface
         if "chat_enabled" in st.session_state and st.session_state.chat_enabled:
-            if "chat_details" in st.session_state and st.session_state.chat_details:
-                display_chat_interface()
+            if "chat_details" in st.session_state and st.session_state.chat_details and isinstance(st.session_state.chat_details, dict):
+                try:
+                    # Create a unique session ID for this display context
+                    display_context_id = f"display_analysis_{id(results)}"
+                    st.session_state.chat_session_id = display_context_id
+                    display_chat_interface()
+                except Exception as e:
+                    logger.error(f"Error displaying chat interface: {str(e)}")
+                    st.markdown("""
+                    <div style="background: rgba(255, 177, 66, 0.2); border-left: 4px solid #ffb142; padding: 1.5rem; border-radius: 4px; margin-bottom: 1rem; height: 380px; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center;">
+                        <h3 style="margin-top: 0; color: #ffb142;">Chat Error</h3>
+                        <p style="color: #e0e0e0;">An error occurred while displaying the chat interface. Please try analyzing the video again.</p>
+                    </div>
+                    """, unsafe_allow_html=True)
             else:
                 st.markdown("""
                 <div style="background: rgba(255, 177, 66, 0.2); border-left: 4px solid #ffb142; padding: 1.5rem; border-radius: 4px; margin-bottom: 1rem; height: 380px; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center;">
@@ -2397,7 +2510,7 @@ def display_analysis_results(results: Dict[str, Any]):
                 st.error(f"Error displaying highlights tab: {str(e)}")
                 logger.error(f"Error in highlights tab: {str(e)}", exc_info=True)
     
-    # Display token usage if available
+            # Display token usage if available
     if token_usage:
         st.markdown("<h2 class='sub-header'>📈 Token Usage</h2>", unsafe_allow_html=True)
         token_container = st.container()
@@ -2449,6 +2562,10 @@ def display_analysis_results(results: Dict[str, Any]):
                 except Exception as e:
                     # If any error occurs, just display the raw token information
                     st.text(f"Token Usage: {token_usage}")
+        
+    # Display performance statistics if available (Phase 2)
+    if "performance_stats" in results and results["performance_stats"]:
+        display_performance_stats(results["performance_stats"])
 
 
 # Add this function to convert transcript list to text format
@@ -2485,6 +2602,166 @@ def convert_transcript_list_to_text(transcript_list):
     except Exception as e:
         logger.exception(f"Error converting transcript list to text: {str(e)}")
         return ""
+
+def format_transcript_with_timestamps(transcript_list):
+    """
+    Format a transcript list with timestamps.
+    
+    Args:
+        transcript_list: A list of transcript segments with 'start' and 'text' keys
+        
+    Returns:
+        Formatted transcript with timestamps in the format "[MM:SS] Text"
+    """
+    if not transcript_list:
+        return ""
+    
+    try:
+        # Format transcript with timestamps
+        timestamped_transcript = ""
+        for item in transcript_list:
+            if isinstance(item, dict) and 'start' in item and 'text' in item:
+                start = item.get('start', 0)
+                minutes, seconds = divmod(int(start), 60)
+                timestamp = f"[{minutes:02d}:{seconds:02d}]"
+                text = item.get('text', '')
+                timestamped_transcript += f"{timestamp} {text}\n"
+        
+        return timestamped_transcript
+    except Exception as e:
+        logger.exception(f"Error formatting transcript with timestamps: {str(e)}")
+        return ""
+
+def ensure_transcript_service_has_sync_method():
+    """
+    Ensure that the TranscriptService class has a synchronous method to get transcript.
+    This patches the class if the method doesn't exist.
+    """
+    from src.youtube_analysis.services import TranscriptService
+    
+    # Check if get_transcript_sync method already exists
+    if not hasattr(TranscriptService, 'get_transcript_sync') or not callable(getattr(TranscriptService, 'get_transcript_sync', None)):
+        # Add the method
+        def get_transcript_sync(self, url):
+            """
+            Synchronous method to get transcript, used as a fallback for the webapp.
+            Args:
+                url: The YouTube video URL
+            Returns:
+                Transcript list or None if error
+            """
+            try:
+                import asyncio
+                logger.info(f"Using asyncio.run to call get_transcript for url: {url}")
+                
+                # Get the coroutine but don't run it yet
+                coroutine = self.get_transcript(url)
+                
+                # Run the coroutine in asyncio.run
+                result = asyncio.run(coroutine)
+                
+                # If result is None, try direct YouTube API call
+                if result is None:
+                    video_id = self.youtube_repo.extract_video_id(url)
+                    if video_id:
+                        from youtube_transcript_api import YouTubeTranscriptApi
+                        try:
+                            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'de', 'ta', 'es', 'fr'])
+                            return transcript_list
+                        except Exception as e:
+                            logger.error(f"Error using YouTubeTranscriptApi directly: {str(e)}")
+                            return None
+                    else:
+                        logger.error(f"Could not extract video ID from url: {url}")
+                        return None
+                
+                # Return the result directly if it's already a list
+                if isinstance(result, list):
+                    return result
+                
+                # If result is a string, it's the plain transcript, so we need to return None for transcript_list
+                if isinstance(result, str):
+                    logger.warning("get_transcript returned string instead of list, returning None")
+                    return None
+                
+                logger.error(f"Unknown result type from get_transcript: {type(result)}")
+                return None
+            except Exception as e:
+                logger.error(f"Error in get_transcript_sync: {str(e)}")
+                return None
+        
+        # Also add get_video_data_sync if it doesn't exist
+        def get_video_data_sync(self, url):
+            """
+            Synchronous method to get video data, used as a fallback for the webapp.
+            Args:
+                url: The YouTube video URL
+            Returns:
+                VideoData object or None if error
+            """
+            try:
+                import asyncio
+                logger.info(f"Using asyncio.run to get video data for url: {url}")
+                
+                # Get the coroutine
+                coroutine = self._get_video_data(url)
+                
+                # Run the coroutine
+                return asyncio.run(coroutine)
+            except Exception as e:
+                logger.error(f"Error in get_video_data_sync: {str(e)}")
+                return None
+        
+        # Add the methods to the class
+        setattr(TranscriptService, "get_transcript_sync", get_transcript_sync)
+        setattr(TranscriptService, "get_video_data_sync", get_video_data_sync)
+        logger.info("Added get_transcript_sync and get_video_data_sync methods to TranscriptService class")
+    
+    # Also check if ChatService.setup_chat method requires a synchronous version
+    try:
+        from src.youtube_analysis.services import ChatService
+        
+        if not hasattr(ChatService, 'setup_chat_sync') or not callable(getattr(ChatService, 'setup_chat_sync', None)):
+            def setup_chat_sync(self, video_data, analysis_result=None):
+                """
+                Synchronous wrapper for setup_chat.
+                
+                Args:
+                    video_data: VideoData object
+                    analysis_result: Optional AnalysisResult object
+                    
+                Returns:
+                    Chat details dict or None if error
+                """
+                try:
+                    import asyncio
+                    
+                    # If video_data is a string (URL), handle it differently
+                    if isinstance(video_data, str):
+                        url = video_data
+                        coroutine = self.setup_chat(url, analysis_result)
+                    else:
+                        # Create a coroutine that takes a VideoData object
+                        url = video_data.youtube_url if hasattr(video_data, 'youtube_url') else None
+                        coroutine = self.setup_chat(url, video_data)
+                    
+                    # Run the coroutine
+                    return asyncio.run(coroutine)
+                except Exception as e:
+                    logger.error(f"Error in setup_chat_sync: {str(e)}")
+                    return None
+            
+            setattr(ChatService, "setup_chat_sync", setup_chat_sync)
+            logger.info("Added setup_chat_sync method to ChatService class")
+    except ImportError:
+        logger.warning("Could not import ChatService, skipping setup_chat_sync addition")
+
+# Ensure the TranscriptService has the sync method
+try:
+    ensure_transcript_service_has_sync_method()
+    logger.info("Checked and ensured TranscriptService has sync method")
+except Exception as e:
+    logger.warning(f"Could not ensure TranscriptService has sync method: {str(e)}")
 
 def check_agent_streaming_support(agent):
     """
@@ -2663,6 +2940,7 @@ def initialize_session_state():
             "model": "gpt-4o-mini",
             "temperature": 0.7,
             "use_cache": True,
+            "use_optimized": True,  # Default to using Phase 2 architecture
             "analysis_types": ["Summary & Classification"]  # Default analysis types
         }
         logger.info("Initialized default settings in session state")
@@ -2673,7 +2951,7 @@ def get_skimr_logo_base64():
     from pathlib import Path
     
     # Logo file path
-    logo_path = Path("src/youtube_analysis/logo/original.png")
+    logo_path = Path("src/youtube_analysis/logo/logo_v2.png")
     
     # Check if the logo file exists
     if not logo_path.exists():
@@ -2775,6 +3053,16 @@ def main():
                 value=True,
                 help="Enable caching for faster repeated analysis of the same videos"
             )
+            
+            # Architecture toggle
+            use_optimized = st.checkbox(
+                label="Use Phase 2 Optimized Architecture",
+                value=True,
+                help="Enable the improved service layer architecture with smart caching and connection pooling"
+            )
+            
+            # Set environment variable for architecture selection
+            os.environ["USE_OPTIMIZED_ANALYSIS"] = "true" if use_optimized else "false"
         analysis_types = ["Summary & Classification"]
 
         # Update settings in session state
@@ -2782,11 +3070,12 @@ def main():
             "model": model,
             "temperature": temperature,
             "use_cache": use_cache,
+            "use_optimized": use_optimized,
             "analysis_types": analysis_types
         })
         
         # For debugging
-        logger.info(f"Settings updated in sidebar: model={model}, temperature={temperature}, use_cache={use_cache}")
+        logger.info(f"Settings updated in sidebar: model={model}, temperature={temperature}, use_cache={use_cache}, use_optimized={use_optimized}")
         
         # Set environment variables based on settings
         os.environ["LLM_MODEL"] = model
@@ -2816,6 +3105,14 @@ def main():
                     st.rerun()
         
             if st.button("🔄 New Analysis", key="new_analysis"):
+                # Clean up Phase 2 resources
+                try:
+                    # Run resource cleanup for Phase 2 architecture
+                    asyncio.run(cleanup_analysis_resources())
+                    logger.info("Successfully cleaned up Phase 2 resources")
+                except Exception as cleanup_error:
+                    logger.warning(f"Error cleaning up Phase 2 resources: {str(cleanup_error)}")
+                
                 # Reset all relevant state
                 st.session_state.chat_enabled = False
                 st.session_state.chat_messages = []
@@ -2857,6 +3154,27 @@ def main():
                         st.rerun()
                     else:
                         st.info("No cached data found for this video")
+        
+        # Add Phase 2 information section
+        if st.session_state.settings.get("use_optimized", True):
+            st.markdown("### Phase 2 Improvements")
+            st.markdown("""
+            **Enabled features:**
+            - Service layer architecture
+            - Smart caching with TTL
+            - Connection pooling
+            - Concurrent processing
+            - Memory monitoring
+            """)
+            
+            # Add a link to the documentation
+            if st.button("View Full Improvements Doc", key="view_p2_doc"):
+                try:
+                    with open("PHASE2_IMPROVEMENTS.md", "r") as f:
+                        improvements_doc = f.read()
+                    st.markdown(improvements_doc)
+                except Exception as e:
+                    st.error(f"Error loading documentation: {str(e)}")
         
         # Display version
         st.markdown(f"<div style='text-align: center; margin-top: 2rem; opacity: 0.7;'>Skimr v{VERSION}</div>", unsafe_allow_html=True)
@@ -3048,13 +3366,26 @@ def main():
                                                 analysis_types = ["Summary & Classification"] + analysis_types
                                                 logger.info(f"Added required Summary & Classification to analysis types: {analysis_types}")
                                             
-                                            analysis_result = run_analysis(
-                                                url,  
-                                                update_progress,
-                                                update_status,
-                                                use_cache=use_cache,
-                                                analysis_types=tuple(analysis_types)
-                                            )
+                                            # Use Phase 2 optimized architecture if enabled, otherwise fallback to original
+                                            use_optimized = os.environ.get("USE_OPTIMIZED_ANALYSIS", "true").lower() in ("true", "1", "yes")
+                                            if use_optimized:
+                                                logger.info("Using optimized Phase 2 architecture for analysis")
+                                                analysis_result = run_analysis_with_v2(
+                                                    url,  
+                                                    update_progress,
+                                                    update_status,
+                                                    use_cache=use_cache,
+                                                    analysis_types=tuple(analysis_types)
+                                                )
+                                            else:
+                                                logger.info("Using original analysis architecture")
+                                                analysis_result = run_analysis(
+                                                    url,  
+                                                    update_progress,
+                                                    update_status,
+                                                    use_cache=use_cache,
+                                                    analysis_types=tuple(analysis_types)
+                                                )
                                             # Handle the returned value properly
                                             if isinstance(analysis_result, tuple) and len(analysis_result) == 2:
                                                 results, error = analysis_result
@@ -3123,18 +3454,12 @@ def main():
                                     st.error(f"An error occurred during analysis: {str(timeout_error)}")
                                     return
                                 
-                                # Setup chat for video - this is needed for both cached and non-cached results
+                                # Setup chat for video - check if already set up in analysis results
                                 try:
-                                    # Import the chat setup function
-                                    from src.youtube_analysis.chat import setup_chat_for_video
-                                    
-                                    # Get transcript from results or session state
-                                    transcript = results.get("transcript", st.session_state.transcript_text)
-                                    
-                                    # Set up chat with the transcript and list
-                                    chat_details = setup_chat_for_video(url, transcript, transcript_list)
-                                    
-                                    if chat_details:
+                                    # Check if chat_details already exists in analysis results
+                                    if "chat_details" in results and results["chat_details"] and results["chat_details"].get("agent"):
+                                        logger.info("Using valid chat details from analysis results")
+                                        chat_details = results["chat_details"]
                                         st.session_state.chat_details = chat_details
                                         st.session_state.chat_enabled = True
                                         
@@ -3150,8 +3475,43 @@ def main():
                                             }
                                         ]
                                     else:
-                                        logger.error("Failed to set up chat for video")
-                                        st.session_state.chat_enabled = False
+                                        # Chat details not in results, set up manually
+                                        logger.info("Chat details not in results, setting up manually")
+                                        
+                                        # Import the chat setup function
+                                        from src.youtube_analysis.chat import setup_chat_for_video
+                                        
+                                        # Get transcript from results or session state
+                                        transcript = results.get("transcript", st.session_state.transcript_text)
+                                        
+                                        # Get transcript_list from results or session state
+                                        transcript_list_for_chat = results.get("transcript_list", st.session_state.transcript_list)
+                                        
+                                        # Debug logging
+                                        logger.info(f"Setting up chat manually - transcript length: {len(transcript) if transcript else 0}, transcript_list length: {len(transcript_list_for_chat) if transcript_list_for_chat else 0}")
+                                        
+                                        # Set up chat with the transcript and list
+                                        chat_details = setup_chat_for_video(url, transcript, transcript_list_for_chat)
+                                        
+                                        if chat_details:
+                                            st.session_state.chat_details = chat_details
+                                            st.session_state.chat_enabled = True
+                                            
+                                            # Create welcome message
+                                            video_title = video_info.get('title', 'this video')
+                                            welcome_message = f"Hello! I'm your AI assistant for the video \"{video_title}\". Ask me any questions about the content, and I'll do my best to answer based on the transcript. I'll include timestamps [MM:SS] in my answers to help you locate information in the video."
+                                            
+                                            # Initialize chat messages
+                                            st.session_state.chat_messages = [
+                                                {
+                                                    "role": "assistant", 
+                                                    "content": welcome_message
+                                                }
+                                            ]
+                                        else:
+                                            logger.error("Failed to set up chat for video")
+                                            st.session_state.chat_enabled = False
+                                            
                                 except Exception as chat_setup_error:
                                     logger.exception(f"Error setting up chat: {str(chat_setup_error)}")
                                     st.session_state.chat_enabled = False
@@ -3353,6 +3713,25 @@ def main():
                 logger.info("Displaying fallback analysis results")
                 display_analysis_results(results)
 
+    # Add Chat Interface - REMOVED to prevent duplicate chat interfaces
+    # The chat interface is already being displayed in the display_analysis_results function
+    # Keeping this commented out to fix the issue of two chat interfaces appearing
+    
+    # if 'analysis_results' in st.session_state and st.session_state.analysis_results:
+    #     if st.session_state.analysis_results and "chat_details" in st.session_state.analysis_results and st.session_state.analysis_results["chat_details"]:
+    #         try:
+    #             # Create a session ID based on the current analysis results
+    #             session_id = id(st.session_state.analysis_results)
+    #             st.session_state.chat_session_id = session_id
+    #             display_chat_interface()
+    #         except Exception as e:
+    #             logger.error(f"Error displaying chat interface in main: {str(e)}")
+    #             st.error("There was an error displaying the chat interface. Please try analyzing the video again.")
+    #     else:
+    #         st.error("Chat functionality is not available for this video. This could be due to issues retrieving the transcript.")
+            
+    # Display video analysis details if analysis was performed
+
 def generate_additional_analysis(youtube_url: str, video_id: str, transcript: str, analysis_type: str, progress_callback=None, status_callback=None):
     """
     Generate a specific additional analysis type on demand after the initial analysis is complete.
@@ -3519,6 +3898,299 @@ def generate_additional_analysis(youtube_url: str, video_id: str, transcript: st
         error_msg = f"Error generating {analysis_type}: {str(e)}"
         logger.error(error_msg, exc_info=True)
         return None, error_msg
+
+def run_analysis_with_v2(url: str, progress_callback: Callable[[int], None] = None, 
+                        status_callback: Callable[[str], None] = None, 
+                        use_cache: bool = True, 
+                        analysis_types: Tuple[str, ...] = ("Summary & Classification",)) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """
+    Run analysis using the Phase 2 architecture with optimized performance.
+    
+    Args:
+        url: YouTube video URL
+        progress_callback: Function to call with progress updates (0-100)
+        status_callback: Function to call with status updates
+        use_cache: Whether to use cached results
+        analysis_types: Types of analysis to perform
+        
+    Returns:
+        Tuple of (results_dict, error_message)
+    """
+    try:
+        # Extract video ID from URL
+        video_id = extract_video_id(url)
+        if not video_id:
+            logger.error(f"Failed to extract video ID from URL: {url}")
+            return None, "Could not extract video ID from URL"
+        
+        if progress_callback:
+            progress_callback(5)
+        if status_callback:
+            status_callback("Starting optimized analysis...")
+        
+        # Check if cached results exist
+        if use_cache:
+            cached_results = get_cached_analysis(video_id)
+            if cached_results:
+                logger.info(f"Using cached analysis for video ID: {video_id}")
+                if progress_callback:
+                    progress_callback(90)
+                if status_callback:
+                    status_callback("Retrieved cached analysis results")
+                cached_results["video_id"] = video_id
+                cached_results["youtube_url"] = url
+                cached_results["cached"] = True
+                cached_results["performance_stats"] = get_performance_stats()
+                if progress_callback:
+                    progress_callback(100)
+                if status_callback:
+                    status_callback("Analysis complete (cached)")
+                return cached_results, None
+        
+        # Fetch transcript and video info
+        if status_callback:
+            status_callback("Fetching video transcript...")
+        transcript_service = get_service_factory().get_transcript_service()
+        youtube_repo = get_service_factory().get_youtube_repository()
+        
+        # Get video info using the repository (private method, async)
+        if status_callback:
+            status_callback("Retrieving video information...")
+        if progress_callback:
+            progress_callback(15)
+        import asyncio
+        video_info = asyncio.run(youtube_repo._get_video_info(url))
+        if not video_info:
+            logger.warning(f"Could not fetch video info for URL: {url}")
+            video_info = {
+                "title": "Unknown Title",
+                "description": "No description available",
+                "channel": "Unknown Channel"
+            }
+        
+        # Check if video_info is a dictionary or an object
+        video_title = "Unknown Title"
+        video_description = "No description available"
+        if isinstance(video_info, dict):
+            video_title = video_info.get("title", "Unknown Title")
+            video_description = video_info.get("description", "")
+        else:
+            # Assume it's a VideoInfo object and access attributes directly
+            try:
+                video_title = getattr(video_info, "title", "Unknown Title")
+                video_description = getattr(video_info, "description", "")
+                logger.info(f"Successfully accessed VideoInfo object attributes: {video_title}")
+            except Exception as e:
+                logger.error(f"Error accessing VideoInfo attributes: {str(e)}")
+                # Fallback to defaults
+                video_title = "Unknown Title"
+                video_description = "No description available"
+        
+        # Get transcript using the service layer sync method
+        transcript_list = None
+        timestamped_transcript = None
+        transcript_text = None
+        try:
+            transcript_list = transcript_service.get_transcript_sync(url)
+            if transcript_list:
+                logger.info(f"Successfully retrieved transcript using Phase 2 architecture for video ID: {video_id}")
+                timestamped_transcript = format_transcript_with_timestamps(transcript_list)
+                transcript_text = convert_transcript_list_to_text(transcript_list)
+        except Exception as e:
+            logger.warning(f"Error using Phase 2 transcript service: {str(e)}")
+            logger.info("Falling back to legacy transcript retrieval")
+            timestamped_transcript, transcript_list, transcript_error = process_transcript_async(url, use_cache=use_cache)
+            if transcript_error:
+                logger.error(f"Error getting transcript: {transcript_error}")
+                return None, f"Failed to retrieve transcript: {transcript_error}"
+            transcript_text = convert_transcript_list_to_text(transcript_list) or timestamped_transcript
+        
+        # Create VideoInfo object
+        from src.youtube_analysis.models import VideoInfo as VideoInfoModel
+        video_info_obj = VideoInfoModel(
+            video_id=video_id,
+            title=video_title,
+            description=video_description
+        )
+        
+        # Create VideoData object
+        from src.youtube_analysis.models import VideoData, TranscriptSegment
+        
+        # Convert transcript_list to TranscriptSegment objects if available
+        transcript_segments = None
+        if transcript_list:
+            transcript_segments = []
+            for item in transcript_list:
+                if isinstance(item, dict) and 'text' in item and 'start' in item:
+                    segment = TranscriptSegment(
+                        text=item.get('text', ''),
+                        start=item.get('start', 0),
+                        duration=item.get('duration')
+                    )
+                    transcript_segments.append(segment)
+        
+        video_data = VideoData(
+            video_info=video_info_obj,
+            transcript=transcript_text,
+            timestamped_transcript=timestamped_transcript,
+            transcript_segments=transcript_segments
+        )
+        
+        if progress_callback:
+            progress_callback(35)
+        if status_callback:
+            status_callback("Running optimized AI analysis...")
+        
+        # Run the analysis using Phase 2 architecture
+        workflow = get_service_factory().get_video_analysis_workflow()
+        
+        # The workflow has analyze_video_complete method, not run_analysis
+        import asyncio
+        # Get settings from environment or session state
+        model_name = os.environ.get("LLM_MODEL", "gpt-4o-mini")
+        temperature = float(os.environ.get("LLM_TEMPERATURE", "0.7"))
+        
+        # Convert tuple of analysis_types to list for the analyze_video_complete method
+        analysis_types_list = list(analysis_types) if analysis_types else ["Summary & Classification"]
+        
+        # Run the workflow.analyze_video_complete method with asyncio.run
+        complete_results, error = asyncio.run(workflow.analyze_video_complete(
+            youtube_url=url,
+            analysis_types=analysis_types_list,
+            use_cache=use_cache,
+            progress_callback=progress_callback,
+            status_callback=status_callback,
+            model_name=model_name,
+            temperature=temperature
+        ))
+        
+        if error:
+            logger.error(f"Error in video analysis workflow: {error}")
+            return None, f"Analysis error: {error}"
+        
+        if not complete_results:
+            logger.error("Video analysis workflow returned empty results")
+            return None, "Analysis failed to produce results"
+        
+        if progress_callback:
+            progress_callback(90)
+        
+        # Additional processing for webapp compatibility
+        result_dict = complete_results
+        
+        # Make sure we have the required fields for the webapp
+        if "video_id" not in result_dict:
+            result_dict["video_id"] = video_id
+        if "youtube_url" not in result_dict:
+            result_dict["youtube_url"] = url
+        if "transcript" not in result_dict:
+            result_dict["transcript"] = transcript_text
+        if "transcript_list" not in result_dict:
+            result_dict["transcript_list"] = transcript_list
+        if "timestamped_transcript" not in result_dict:
+            result_dict["timestamped_transcript"] = timestamped_transcript
+        if "performance_stats" not in result_dict:
+            result_dict["performance_stats"] = get_performance_stats()
+        
+        # Cache the results if caching is enabled
+        if use_cache and not result_dict.get("cached", False):
+            cache_analysis(video_id, result_dict)
+            logger.info(f"Cached analysis results for video ID: {video_id}")
+        
+        if status_callback:
+            status_callback("Analysis complete")
+        if progress_callback:
+            progress_callback(100)
+        
+        logger.info(f"Analysis complete for video ID: {video_id}")
+        return result_dict, None
+    
+    except Exception as e:
+        error_msg = str(e)
+        logger.exception(f"Error in run_analysis_with_v2: {error_msg}")
+        return None, f"Analysis error: {error_msg}"
+
+def format_analysis_time(seconds, include_cached=False, cached=False):
+    """Format analysis time in a user-friendly way and optionally show cached status"""
+    if seconds < 60:
+        time_str = f"{seconds:.1f} seconds"
+    elif seconds < 3600:
+        minutes = seconds / 60
+        time_str = f"{minutes:.1f} minutes"
+    else:
+        hours = seconds / 3600
+        time_str = f"{hours:.1f} hours"
+    
+    if include_cached and cached:
+        return f"{time_str} (cached)"
+    return time_str
+
+def display_performance_stats(performance_stats):
+    """
+    Display performance statistics from the Phase 2 architecture.
+    
+    Args:
+        performance_stats: Dictionary containing performance statistics
+    """
+    if not performance_stats:
+        return
+    
+    # Create an expander for performance statistics
+    with st.expander("⚡ Performance Statistics", expanded=False):
+        st.markdown("### Cache Performance")
+        
+        # Create columns for cache stats
+        col1, col2, col3, col4 = st.columns(4)
+        
+        cache_stats = performance_stats.get("cache_stats", {})
+        
+        with col1:
+            hit_rate = cache_stats.get("hit_rate", 0) * 100
+            st.metric("Cache Hit Rate", f"{hit_rate:.1f}%")
+        
+        with col2:
+            memory_size = cache_stats.get("memory_size_mb", 0)
+            st.metric("Memory Usage", f"{memory_size:.1f} MB")
+        
+        with col3:
+            total_items = cache_stats.get("total_items", 0)
+            st.metric("Cached Items", total_items)
+        
+        with col4:
+            avg_lookup = cache_stats.get("avg_lookup_time_ms", 0)
+            st.metric("Avg Lookup Time", f"{avg_lookup:.2f} ms")
+        
+        # Create a second row for connection stats
+        st.markdown("### Connection Pool")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        connection_stats = performance_stats.get("connection_stats", {})
+        
+        with col1:
+            active = connection_stats.get("active_connections", 0)
+            st.metric("Active Connections", active)
+        
+        with col2:
+            reused = connection_stats.get("reused_connections", 0)
+            st.metric("Reused Connections", reused)
+        
+        with col3:
+            avg_response = connection_stats.get("avg_response_time_ms", 0)
+            st.metric("Avg Response Time", f"{avg_response:.2f} ms")
+        
+        # Additional performance metrics
+        st.markdown("### Processing Efficiency")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            concurrent_ops = performance_stats.get("concurrent_operations", 0)
+            st.metric("Concurrent Operations", concurrent_ops)
+        
+        with col2:
+            background_tasks = performance_stats.get("background_tasks", 0)
+            st.metric("Background Tasks", background_tasks)
 
 if __name__ == "__main__":
     main() 

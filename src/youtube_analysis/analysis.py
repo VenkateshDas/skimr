@@ -11,8 +11,8 @@ from .utils.logging import get_logger
 from .utils.video_highlights import generate_highlights_video, get_cached_highlights_video, cache_highlights_video
 from .core import CacheManager, YouTubeClient
 from .crew import YouTubeAnalysisCrew
-from .transcript import get_transcript_with_timestamps
-from .chat import setup_chat_for_video
+from .transcript import get_transcript_with_timestamps, get_transcript_with_timestamps_async
+from .chat import setup_chat_for_video, setup_chat_for_video_async
 
 # Configure logging
 logger = get_logger("analysis")
@@ -20,6 +20,249 @@ logger = get_logger("analysis")
 # Initialize core components
 cache_manager = CacheManager()
 youtube_client = YouTubeClient(cache_manager)
+
+async def _fetch_video_data(youtube_url: str) -> Tuple[str, str, Optional[str], Optional[List[Dict[str, Any]]], Dict[str, Any]]:
+    """
+    Fetch all video-related data concurrently.
+    
+    Returns:
+        Tuple of (video_id, transcript, timestamped_transcript, transcript_list, video_info)
+    """
+    video_id = youtube_client.extract_video_id(youtube_url)
+    logger.info(f"Extracted video ID: {video_id} from URL: {youtube_url}")
+    
+    # Fetch all data concurrently for maximum performance
+    transcript_task = youtube_client.get_transcript(youtube_url)
+    video_info_task = youtube_client.get_video_info(youtube_url)
+    timestamped_transcript_task = get_transcript_with_timestamps_async(youtube_url)
+    
+    try:
+        # Run all three operations concurrently
+        results = await asyncio.gather(
+            transcript_task,
+            video_info_task, 
+            timestamped_transcript_task,
+            return_exceptions=True  # Don't fail if one fails
+        )
+        
+        transcript = results[0] if not isinstance(results[0], Exception) else None
+        video_info_obj = results[1] if not isinstance(results[1], Exception) else None
+        
+        # Handle timestamped transcript result
+        if isinstance(results[2], Exception):
+            logger.warning(f"Could not get transcript with timestamps: {str(results[2])}")
+            timestamped_transcript, transcript_list = None, None
+        else:
+            timestamped_transcript, transcript_list = results[2]
+        
+        # Validate that we at least got the basic transcript
+        if transcript is None:
+            logger.error(f"Failed to fetch basic transcript for video {video_id}")
+            raise ValueError("Failed to fetch basic transcript")
+        
+        # Convert video info object to dict
+        video_info = {
+            "title": video_info_obj.title if video_info_obj else "Unknown Video",
+            "description": video_info_obj.description if video_info_obj else "No description available"
+        }
+        
+        return video_id, transcript, timestamped_transcript, transcript_list, video_info
+        
+    except Exception as e:
+        logger.error(f"Error fetching video data: {str(e)}")
+        raise
+
+async def _check_and_validate_cache(video_id: str, use_cache: bool) -> Optional[Dict[str, Any]]:
+    """
+    Check cache and validate cached results.
+    
+    Returns:
+        Valid cached results or None
+    """
+    if not use_cache:
+        logger.info(f"Cache usage disabled, forcing new analysis for video {video_id}")
+        return None
+    
+    logger.info(f"Checking for cached analysis for video ID: {video_id}")
+    cached_results = cache_manager.get("analysis", f"analysis_{video_id}")
+    
+    if not cached_results:
+        return None
+    
+    logger.info(f"Using cached analysis for video {video_id}")
+    logger.debug(f"Cached results keys: {cached_results.keys()}")
+    
+    # Check for placeholder content
+    if "task_outputs" in cached_results and cached_results["task_outputs"]:
+        for key, value in cached_results["task_outputs"].items():
+            if isinstance(value, str) and "placeholder" in value.lower():
+                logger.warning(f"Found placeholder content in cached task output '{key}', forcing new analysis")
+                return None
+    
+    return cached_results
+
+async def _setup_chat_for_cached_results(youtube_url: str, video_id: str, cached_results: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Set up chat functionality for cached results.
+    """
+    try:
+        # Fetch data needed for chat
+        video_id, transcript, timestamped_transcript, transcript_list, _ = await _fetch_video_data(youtube_url)
+        
+        # Set up chat functionality
+        if transcript is None:
+            logger.error(f"Cannot set up chat: transcript is None for video {video_id}")
+            chat_details = None
+        else:
+            chat_details = await setup_chat_for_video_async(youtube_url, transcript, transcript_list)
+        
+        # Update cached results
+        cached_results["chat_details"] = chat_details
+        return cached_results
+        
+    except Exception as e:
+        logger.warning(f"Error recreating chat agent for cached analysis: {str(e)}")
+        return cached_results
+
+async def _execute_crew_analysis(youtube_url: str, video_data: Tuple, analysis_types: List[str], 
+                                progress_callback=None, status_callback=None) -> Tuple[Dict[str, Any], Optional[str]]:
+    """
+    Execute the CrewAI analysis workflow.
+    
+    Args:
+        youtube_url: Video URL
+        video_data: Tuple from _fetch_video_data
+        analysis_types: Types of analysis to perform
+        progress_callback: Progress callback function
+        status_callback: Status callback function
+        
+    Returns:
+        Tuple of (results_dict, error_message)
+    """
+    video_id, transcript, timestamped_transcript, transcript_list, video_info = video_data
+    
+    if progress_callback:
+        progress_callback(30)
+    if status_callback:
+        status_callback("Creating analysis crew...")
+    
+    # Set up chat functionality
+    if transcript is None:
+        logger.error(f"Cannot set up chat: transcript is None for video {video_id}")
+        chat_details = None
+    else:
+        chat_details = await setup_chat_for_video_async(youtube_url, transcript, transcript_list)
+    
+    if progress_callback:
+        progress_callback(40)
+    if status_callback:
+        status_callback("Analyzing video content...")
+    
+    # Create and run the crew
+    logger.info("Creating YouTubeAnalysisCrew")
+    crew_instance = YouTubeAnalysisCrew()
+    
+    try:
+        crew = crew_instance.crew(analysis_types=analysis_types)
+        logger.info(f"Successfully set up crew with {len(crew.tasks)} tasks")
+        
+        # Prepare inputs
+        current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        video_title = video_info["title"]
+        
+        inputs = {
+            "youtube_url": youtube_url,
+            "transcript": transcript,
+            "current_datetime": current_datetime,
+            "video_title": video_title
+        }
+        
+        logger.info(f"Starting crew execution with inputs: youtube_url={youtube_url}, transcript length={len(transcript) if transcript else 0}")
+        
+        # Execute crew
+        crew_output = crew.kickoff(inputs=inputs)
+        logger.info(f"Crew execution completed, output type: {type(crew_output)}")
+        
+        # Extract task outputs
+        task_outputs = {}
+        for task in crew.tasks:
+            task_name = task.name if hasattr(task, 'name') else task.__class__.__name__
+            logger.info(f"Processing task: {task_name}, has output: {hasattr(task, 'output')}")
+            
+            if hasattr(task, 'output') and task.output:
+                task_outputs[task_name] = task.output.raw
+                logger.info(f"Added output for task {task_name}, length: {len(str(task.output.raw))}")
+                
+                # Update progress based on task completion
+                if task_name == "classify_and_summarize_content":
+                    if progress_callback:
+                        progress_callback(70)
+                    if status_callback:
+                        status_callback("Analyzing video content and creating action plan...")
+                elif task_name == "analyze_and_plan_content":
+                    if progress_callback:
+                        progress_callback(95)
+                    if status_callback:
+                        status_callback("Generating final report...")
+        
+        # Validate outputs
+        if not task_outputs:
+            logger.warning("No task outputs were generated")
+            return None, "Analysis produced no results. Please try again."
+        
+        # Check for placeholder content
+        for key, value in task_outputs.items():
+            if isinstance(value, str) and "placeholder" in value.lower():
+                logger.warning(f"Detected placeholder text in task output '{key}'")
+                return None, "Analysis produced placeholder results. Please try again with cache disabled or a different model."
+        
+        if progress_callback:
+            progress_callback(100)
+        if status_callback:
+            status_callback("Analysis completed successfully!")
+        
+        # Get token usage
+        token_usage = crew_output.token_usage if hasattr(crew_output, 'token_usage') else None
+        token_usage_dict = None
+        if token_usage:
+            if hasattr(token_usage, 'get'):
+                token_usage_dict = token_usage
+            else:
+                token_usage_dict = {
+                    "total_tokens": getattr(token_usage, 'total_tokens', 0),
+                    "prompt_tokens": getattr(token_usage, 'prompt_tokens', 0),
+                    "completion_tokens": getattr(token_usage, 'completion_tokens', 0)
+                }
+        
+        # Extract category and context
+        category = "Uncategorized"
+        context_tag = "General"
+        if "classify_and_summarize_content" in task_outputs:
+            category = extract_category(task_outputs["classify_and_summarize_content"])
+            context_tag = extract_context_tag(task_outputs["classify_and_summarize_content"])
+        
+        # Prepare results
+        results = {
+            "video_id": video_id,
+            "youtube_url": youtube_url,
+            "transcript": transcript,
+            "timestamped_transcript": timestamped_transcript,
+            "transcript_list": transcript_list,
+            "output": str(crew_output),
+            "task_outputs": task_outputs,
+            "category": category,
+            "context_tag": context_tag,
+            "token_usage": token_usage_dict,
+            "cached": False,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "chat_details": chat_details
+        }
+        
+        return results, None
+        
+    except Exception as e:
+        logger.error(f"Error in crew execution: {str(e)}", exc_info=True)
+        return None, f"Failed to run analysis crew: {str(e)}"
 
 def extract_category(output: str) -> str:
     """
@@ -85,310 +328,96 @@ def run_analysis(youtube_url: str, progress_callback=None, status_callback=None,
         use_cache: Whether to use cached analysis results if available
         analysis_types: List of analysis types to generate (default: all types)
     """
-    # Start timing the analysis
+    # Convert to async and run
+    return asyncio.run(_run_analysis_async(
+        youtube_url, progress_callback, status_callback, use_cache, analysis_types
+    ))
+
+async def _run_analysis_async(youtube_url: str, progress_callback=None, status_callback=None, 
+                            use_cache: bool = True, analysis_types: List[str] = None) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """
+    Async implementation of run_analysis with improved performance and structure.
+    """
     start_time = datetime.now()
     
     # Default to all analysis types if none specified
     if analysis_types is None:
         analysis_types = ["Summary & Classification", "Action Plan", "Blog Post", "LinkedIn Post", "X Tweet"]
+    
     try:
         if analysis_types is not None and isinstance(analysis_types, list):
-            analysis_types = tuple(analysis_types) 
-
-        # Extract video ID for thumbnail
+            analysis_types = tuple(analysis_types)
+        
+        # Extract video ID first
         video_id = youtube_client.extract_video_id(youtube_url)
         logger.info(f"Extracted video ID: {video_id} from URL: {youtube_url}")
-        logger.debug(f"use_cache setting: {use_cache}")
         
-        # Check if we have cached analysis results
-        cached_results = None
-        if use_cache:
-            logger.info(f"Checking for cached analysis for video ID: {video_id}")
-            cached_results = cache_manager.get("analysis", f"analysis_{video_id}")
-        else:
-            # If use_cache is False, force bypass the cache completely
-            logger.info(f"Cache usage disabled, forcing new analysis for video {video_id}")
-            cached_results = None  # Explicitly set to None to ensure we do a new analysis
+        # Check cache first
+        cached_results = await _check_and_validate_cache(video_id, use_cache)
         
         if cached_results:
-            logger.info(f"Using cached analysis for video {video_id}")
-            logger.debug(f"Cached results keys: {cached_results.keys()}")
+            if status_callback:
+                status_callback("Using cached analysis results...")
+            if progress_callback:
+                progress_callback(100)
             
-            # Check if we have placeholder task outputs and force a new analysis if so
-            if "task_outputs" in cached_results and cached_results["task_outputs"]:
-                has_placeholders = False
-                for key, value in cached_results["task_outputs"].items():
-                    if isinstance(value, str) and "placeholder" in value.lower():
-                        logger.warning(f"Found placeholder content in cached task output '{key}', forcing new analysis")
-                        has_placeholders = True
-                        break
-                
-                if has_placeholders:
-                    logger.info(f"Cached analysis contains placeholder values, forcing new analysis for video {video_id}")
-                    cached_results = None
+            # Calculate analysis time for cached results
+            end_time = datetime.now()
+            analysis_time = (end_time - start_time).total_seconds()
+            cached_results["analysis_time"] = analysis_time
+            cached_results["cached"] = True
             
-            if cached_results:  # Only proceed with cached results if they're still valid
-                if status_callback:
-                    status_callback("Using cached analysis results...")
-                
-                if progress_callback:
-                    progress_callback(100)
-                
-                # Calculate analysis time for cached results
-                end_time = datetime.now()
-                analysis_time = (end_time - start_time).total_seconds()
-                cached_results["analysis_time"] = analysis_time
-                cached_results["cached"] = True
-            
-            # We need to recreate the chat agent since it's not serializable
-            try:
-                # Get the transcript
-                transcript = asyncio.run(youtube_client.get_transcript(youtube_url))
-                
-                # Get transcript with timestamps
-                try:
-                    timestamped_transcript, transcript_list = get_transcript_with_timestamps(youtube_url)
-                except Exception as e:
-                    logger.warning(f"Could not get transcript with timestamps: {str(e)}")
-                    timestamped_transcript = None
-                    transcript_list = None
-                
-                # Set up chat functionality
-                chat_details = setup_chat_for_video(youtube_url, transcript, transcript_list)
-                
-                # Update the cached results with the new chat details
-                cached_results["chat_details"] = chat_details
-                
-            except Exception as e:
-                logger.warning(f"Error recreating chat agent for cached analysis: {str(e)}")
-            
+            # Set up chat for cached results
+            cached_results = await _setup_chat_for_cached_results(youtube_url, video_id, cached_results)
             return cached_results, None
         
-        # Log that we're proceeding with a new analysis
-        if cached_results is None:
-            if use_cache:
-                logger.info(f"No cached analysis found for video {video_id}, proceeding with new analysis")
-            else:
-                logger.info(f"Cache usage disabled, proceeding with new analysis for video {video_id}")
+        # Proceed with new analysis
+        logger.info(f"No cached analysis found for video {video_id}, proceeding with new analysis")
         
-        # Update progress
         if progress_callback:
             progress_callback(0)
         if status_callback:
-            status_callback("Fetching video transcript...")
+            status_callback("Fetching video data...")
         
-        # Get the transcript
-        transcript = asyncio.run(youtube_client.get_transcript(youtube_url))
-        
-        if progress_callback:
-            progress_callback(15)
-        
-        # Get transcript with timestamps
+        # Fetch all video data concurrently
         try:
-            timestamped_transcript, transcript_list = get_transcript_with_timestamps(youtube_url)
+            video_data = await _fetch_video_data(youtube_url)
+            video_id, transcript, timestamped_transcript, transcript_list, video_info = video_data
         except Exception as e:
-            logger.warning(f"Could not get transcript with timestamps: {str(e)}")
-            timestamped_transcript = None
-            transcript_list = None
+            logger.error(f"Error fetching video data: {str(e)}")
+            return None, f"Error fetching video data: {str(e)}"
         
         if progress_callback:
             progress_callback(20)
         if status_callback:
-            status_callback("Creating analysis crew...")
+            status_callback("Running analysis...")
         
-        # Set up chat functionality
-        chat_details = setup_chat_for_video(youtube_url, transcript, transcript_list)
+        # Execute crew analysis
+        results, error = await _execute_crew_analysis(
+            youtube_url, video_data, analysis_types, progress_callback, status_callback
+        )
         
-        if progress_callback:
-            progress_callback(30)
-        if status_callback:
-            status_callback("Chat functionality enabled!")
+        if error:
+            return None, error
         
-        # Create and run the crew
-        logger.info(f"Creating YouTubeAnalysisCrew")
-        crew_instance = YouTubeAnalysisCrew()
+        if not results:
+            return None, "Analysis failed to produce results"
         
+        # Calculate total analysis time
+        end_time = datetime.now()
+        analysis_time = (end_time - start_time).total_seconds()
+        results["analysis_time"] = analysis_time
+        
+        # Cache the results
         try:
-            logger.info("Setting up crew instance")
-            crew = crew_instance.crew(analysis_types=analysis_types)
-            logger.info(f"Successfully set up crew with {len(crew.tasks)} tasks")
-            
-            # Check if we have the expected tasks
-            task_names = [task.name if hasattr(task, 'name') else str(task) for task in crew.tasks]
-            logger.info(f"Tasks in crew: {task_names}")
-            
-            # Update progress
-            if progress_callback:
-                progress_callback(40)
-            if status_callback:
-                status_callback("Analyzing video content...")
-            
-            # Get current date and time
-            current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            video_info = asyncio.run(youtube_client.get_video_info(youtube_url))
-            video_title = video_info.title if video_info else "Unknown Video"
-            
-            # Start the crew execution
-            inputs = {"youtube_url": youtube_url, "transcript": transcript, "current_datetime": current_datetime, "video_title": video_title}
-            logger.info(f"Starting crew execution with inputs: youtube_url={youtube_url}, transcript length={len(transcript) if transcript else 0}")
-            
-            # Execute with additional error handling
-            try:
-                crew_output = crew.kickoff(inputs=inputs)
-                logger.info(f"Crew execution completed, output type: {type(crew_output)}")
-            except Exception as crew_error:
-                logger.error(f"Error during crew execution: {str(crew_error)}", exc_info=True)
-                raise RuntimeError(f"CrewAI execution failed: {str(crew_error)}")
-            
-            # Extract task outputs
-            task_outputs = {}
-            logger.info(f"Number of tasks in crew: {len(crew.tasks)}")
-            
-            # Enhanced task output extraction
-            for task in crew.tasks:
-                task_name = task.name if hasattr(task, 'name') else task.__class__.__name__
-                logger.info(f"Processing task: {task_name}, has output: {hasattr(task, 'output')}")
-                
-                if hasattr(task, 'output'):
-                    if task.output:
-                        task_outputs[task_name] = task.output.raw
-                        output_length = len(str(task.output.raw))
-                        logger.info(f"Added output for task {task_name}, length: {output_length}")
-                        # Log a preview of the output for debugging
-                        preview = str(task.output.raw)[:100] + "..." if len(str(task.output.raw)) > 100 else str(task.output.raw)
-                        logger.info(f"Output preview for {task_name}: {preview}")
-                        
-                        # Update progress based on task completion
-                        if task_name == "classify_and_summarize_content":
-                            if progress_callback:
-                                progress_callback(70)
-                            if status_callback:
-                                status_callback("Analyzing video content and creating action plan...")
-                        elif task_name == "analyze_and_plan_content":
-                            if progress_callback:
-                                progress_callback(95)
-                            if status_callback:
-                                status_callback("Generating final report...")
-                    else:
-                        logger.warning(f"Task {task_name} has output attribute but it is None")
-                else:
-                    logger.warning(f"Task {task_name} does not have an output attribute")
-            
-            # Verify task outputs exist
-            if not task_outputs or len(task_outputs) == 0:
-                logger.warning("No task outputs were generated. Attempting to extract from crew output.")
-                # Try to get outputs from the crew output string
-                crew_output_str = str(crew_output)
-                
-                # Generate fallback task outputs
-                task_outputs = {
-                    "classify_and_summarize_content": "Analysis results were not generated properly. Please try again with a different model or settings.",
-                    "analyze_and_plan_content": "Analysis and action plan could not be created. Please try again with cache disabled.",
-                    "write_report": "Report generation failed. Please try again with cache disabled."
-                }
-                
-                logger.warning("Using fallback task outputs until issue is resolved.")
-            
-            # Additional check to ensure no placeholder text in output
-            placeholder_detected = False
-            for key, value in task_outputs.items():
-                if isinstance(value, str) and "placeholder" in value.lower():
-                    logger.warning(f"Detected placeholder text in task output '{key}'. Analysis may have failed.")
-                    placeholder_detected = True
-                    break
-            
-            if placeholder_detected:
-                logger.error("Analysis produced placeholder outputs, something went wrong")
-                return None, "Analysis produced placeholder results. Please try again with cache disabled or a different model."
-            
-            # Update progress
-            if progress_callback:
-                progress_callback(100)
-            if status_callback:
-                status_callback("Analysis completed successfully!")
-            
-            # Get token usage
-            token_usage = crew_output.token_usage if hasattr(crew_output, 'token_usage') else None
-            
-            # Convert UsageMetrics object to dictionary if needed
-            token_usage_dict = None
-            if token_usage:
-                if hasattr(token_usage, 'get'):
-                    # Already a dictionary
-                    token_usage_dict = token_usage
-                else:
-                    # Convert UsageMetrics object to dictionary
-                    token_usage_dict = {
-                        "total_tokens": getattr(token_usage, 'total_tokens', 0),
-                        "prompt_tokens": getattr(token_usage, 'prompt_tokens', 0),
-                        "completion_tokens": getattr(token_usage, 'completion_tokens', 0)
-                    }
-            
-            # Calculate analysis time
-            end_time = datetime.now()
-            analysis_time = (end_time - start_time).total_seconds()
-            
-            # Extract category from classification output
-            category = "Uncategorized"
-            context_tag = "General"
-            if "classify_and_summarize_content" in task_outputs:
-                category = extract_category(task_outputs["classify_and_summarize_content"])
-                context_tag = extract_context_tag(task_outputs["classify_and_summarize_content"])
-            
-            # Prepare results
-            results = {
-                "video_id": video_id,
-                "youtube_url": youtube_url,
-                "transcript": transcript,
-                "timestamped_transcript": timestamped_transcript,
-                "transcript_list": transcript_list,
-                "output": str(crew_output),
-                "task_outputs": task_outputs,
-                "category": category,
-                "context_tag": context_tag,
-                "token_usage": token_usage_dict,
-                "analysis_time": analysis_time,
-                "cached": False,
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "chat_details": chat_details
-            }
-            
-            # Verify that we have actual analysis data before caching
-            if not task_outputs or len(task_outputs) == 0:
-                logger.error("Analysis produced no task outputs, something went wrong")
-                return None, "Analysis produced no results. Please try again."
-            
-            # Cache the analysis results for future use
-            try:
-                # Create a deep copy to avoid modifying the original results
-                results_to_cache = copy.deepcopy(results)
-                logger.info(f"Caching analysis results for video {video_id}")
-                cache_manager.set("analysis", f"analysis_{video_id}", results_to_cache)
-                logger.info(f"Successfully cached analysis results")
-            except Exception as e:
-                logger.warning(f"Error caching analysis results: {str(e)}")
-            
-            # Final validation check to ensure we're returning proper data
-            if not isinstance(results, dict):
-                logger.error(f"Results is not a dictionary: {type(results)}")
-                # Create a minimal valid structure
-                results = {
-                    "video_id": video_id,
-                    "youtube_url": youtube_url,
-                    "transcript": transcript,
-                    "task_outputs": task_outputs,
-                    "category": category,
-                    "context_tag": context_tag,
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "chat_details": chat_details
-                }
-                logger.warning("Created fallback results dictionary")
-            
-            return results, None
-            
-        except Exception as crew_setup_error:
-            logger.error(f"Error setting up or running crew: {str(crew_setup_error)}", exc_info=True)
-            return None, f"Failed to set up or run analysis crew: {str(crew_setup_error)}"
+            results_to_cache = copy.deepcopy(results)
+            logger.info(f"Caching analysis results for video {video_id}")
+            cache_manager.set("analysis", f"analysis_{video_id}", results_to_cache)
+            logger.info("Successfully cached analysis results")
+        except Exception as e:
+            logger.warning(f"Error caching analysis results: {str(e)}")
+        
+        return results, None
         
     except Exception as e:
         logger.error(f"Error in analysis: {str(e)}", exc_info=True)

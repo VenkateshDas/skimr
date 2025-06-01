@@ -325,6 +325,12 @@ def format_timestamped_results(docs):
 
 def setup_chat_for_video(youtube_url: str, transcript: str, transcript_list: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """
+    Set up the chat functionality for a YouTube video (sync wrapper).
+    """
+    return asyncio.run(setup_chat_for_video_async(youtube_url, transcript, transcript_list))
+
+async def setup_chat_for_video_async(youtube_url: str, transcript: str, transcript_list: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    """
     Set up the chat functionality for a YouTube video.
     
     Args:
@@ -344,14 +350,27 @@ def setup_chat_for_video(youtube_url: str, transcript: str, transcript_list: Opt
         
         # Log that we're using the already retrieved transcript
         logger.info(f"Setting up chat using already retrieved transcript for video ID: {video_id}")
+        if transcript is None:
+            logger.error(f"Transcript is None for video ID: {video_id}")
+            return None
         logger.info(f"Transcript length: {len(transcript)} characters")
-        if transcript_list:
-            logger.info(f"Transcript list contains {len(transcript_list)} segments")
+        
+        # Validate transcript_list if provided
+        has_timestamps = False
+        if transcript_list is not None:
+            if len(transcript_list) > 0:
+                logger.info(f"Transcript list contains {len(transcript_list)} segments")
+                has_timestamps = True
+            else:
+                logger.warning(f"Transcript list is empty for video ID: {video_id}")
+                transcript_list = None
+        else:
+            logger.info(f"No timestamped transcript available for video ID: {video_id}")
         
         # Get video information from the already retrieved data
         try:
             # Use the video_id to get video info
-            video_info_obj = asyncio.run(youtube_client.get_video_info(youtube_url))
+            video_info_obj = await youtube_client.get_video_info(youtube_url)
             
             if not video_info_obj:
                 logger.warning(f"Could not get video info for {video_id}, using default values")
@@ -381,13 +400,14 @@ def setup_chat_for_video(youtube_url: str, transcript: str, transcript_list: Opt
             }
             logger.info(f"Using default video info for chat with {video_id}")
         
-        # Check if we have timestamped transcript
-        has_timestamps = transcript_list is not None and len(transcript_list) > 0
-        
         # Create vector store from the provided transcript
         logger.info(f"Creating vector store from the provided transcript (has timestamps: {has_timestamps})")
-        vectorstore = create_vectorstore(transcript, transcript_list)
-        logger.info(f"Successfully created vector store for chat (with timestamps: {has_timestamps})")
+        try:
+            vectorstore = create_vectorstore(transcript, transcript_list)
+            logger.info(f"Successfully created vector store for chat (with timestamps: {has_timestamps})")
+        except Exception as e:
+            logger.error(f"Error creating vector store: {str(e)}")
+            return None
         
         # Create video metadata
         video_metadata = {
@@ -400,8 +420,12 @@ def setup_chat_for_video(youtube_url: str, transcript: str, transcript_list: Opt
         # Create agent using the same model as specified in environment variables
         # This ensures the chat model is the same as the analysis model
         logger.info("Creating chat agent with the same model settings as analysis")
-        agent = create_agent_graph(vectorstore, video_metadata, has_timestamps)
-        logger.info("Successfully created agent for chat")
+        try:
+            agent = create_agent_graph(vectorstore, video_metadata, has_timestamps)
+            logger.info("Successfully created agent for chat")
+        except Exception as e:
+            logger.error(f"Error creating chat agent: {str(e)}")
+            return None
         
         # Create thread ID for persistence
         thread_id = f"thread_{video_id}_{int(time.time())}"

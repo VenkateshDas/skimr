@@ -206,4 +206,23 @@ def display_video_highlights(video_path: str, highlights: List[Dict[str, Any]]):
             
             # Add a divider between highlights
             if i < len(highlights):
-                st.divider() 
+                st.divider()
+
+
+def get_skimr_logo_base64():
+    """Returns the base64 encoded Skimr logo for embedding in HTML."""
+    import base64
+    from pathlib import Path
+    
+    # Logo file path
+    logo_path = Path("src/youtube_analysis/logo/logo_v2.png")
+    
+    # Check if the logo file exists
+    if not logo_path.exists():
+        return None
+    
+    try:
+        with open(logo_path, "rb") as img_file:
+            return base64.b64encode(img_file.read()).decode()
+    except Exception:
+        return None
