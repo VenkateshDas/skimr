@@ -77,3 +77,19 @@ class StreamlitCallbacks:
                 self.status_placeholder.error(message)
         except Exception as e:
             logger.debug(f"Could not show error: {e}")
+    
+    def update_progress(self, value: int):
+        """Update progress directly."""
+        try:
+            if get_script_run_ctx() and self.progress_bar:
+                self.progress_bar.progress(value)
+        except Exception as e:
+            logger.debug(f"Could not update progress: {e}")
+    
+    def update_status(self, message: str):
+        """Update status directly."""
+        try:
+            if get_script_run_ctx() and self.status_placeholder:
+                self.status_placeholder.info(message)
+        except Exception as e:
+            logger.debug(f"Could not update status: {e}")

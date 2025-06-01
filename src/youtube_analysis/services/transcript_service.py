@@ -45,6 +45,50 @@ class TranscriptService:
         
         return video_data.timestamped_transcript, transcript_list
     
+    async def get_formatted_transcripts(
+        self,
+        youtube_url: str,
+        video_id: str,
+        use_cache: bool = True
+    ) -> Tuple[Optional[str], Optional[List[Dict[str, Any]]]]:
+        """
+        Get formatted transcripts for a video.
+        
+        Args:
+            youtube_url: YouTube URL
+            video_id: Video ID
+            use_cache: Whether to use cached data
+            
+        Returns:
+            Tuple of (timestamped transcript string, segment list)
+        """
+        video_data = await self._get_video_data(youtube_url, use_cache)
+        if not video_data:
+            return None, None
+        
+        # Format transcript with timestamps
+        timestamped_transcript = ""
+        transcript_segments = []
+        
+        if video_data.transcript_segments:
+            for seg in video_data.transcript_segments:
+                # Format timestamp
+                start = seg.start
+                minutes, seconds = divmod(int(start), 60)
+                timestamp = f"[{minutes:02d}:{seconds:02d}]"
+                
+                # Add to timestamped transcript
+                timestamped_transcript += f"{timestamp} {seg.text}\n"
+                
+                # Add to segments list
+                transcript_segments.append({
+                    "text": seg.text,
+                    "start": seg.start,
+                    "duration": seg.duration
+                })
+        
+        return timestamped_transcript, transcript_segments
+    
     def get_transcript_sync(self, youtube_url: str, use_cache: bool = True) -> Optional[List[Dict[str, Any]]]:
         """
         Synchronous method to get transcript, used as a fallback for the webapp.

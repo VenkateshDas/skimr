@@ -2,14 +2,14 @@
 
 from .streamlit_callbacks import StreamlitCallbacks
 from .session_manager import StreamlitSessionManager
-from .components import display_analysis_results, display_chat_interface, handle_chat_input
+from .components import display_analysis_results, display_chat_interface, display_performance_stats
 
 __all__ = [
     "StreamlitCallbacks", 
     "StreamlitSessionManager",
     "display_analysis_results",
-    "display_chat_interface", 
-    "handle_chat_input"
+    "display_chat_interface",
+    "display_performance_stats"
 ]
 
 # Lazy import functions to avoid circular imports

@@ -268,13 +268,14 @@ def display_analysis_results_original(results: Dict[str, Any]):
             tweet_tab_index = tab_index
             tab_index += 1
         
-        # Always include transcript and video highlights
+        # Always include transcript
         tab_options.append("🎙️ Transcript")
         transcript_tab_index = tab_index
         tab_index += 1
         
-        tab_options.append("🎬 Video Highlights")
-        highlights_tab_index = tab_index
+        # Video highlights disabled - keeping code for future use
+        # tab_options.append("🎬 Video Highlights")
+        # highlights_tab_index = tab_index
         
         # Create tabs
         tabs = st.tabs(tab_options)
@@ -368,9 +369,9 @@ def display_analysis_results_original(results: Dict[str, Any]):
             else:
                 st.info("Transcript not available.")
         
-        # Video Highlights tab
-        with tabs[highlights_tab_index]:
-            display_video_highlights_tab(video_id)
+        # Video Highlights tab - disabled, keeping code for future use
+        # with tabs[highlights_tab_index]:
+        #     display_video_highlights_tab(video_id)
 
 
 def display_chat_interface_original():

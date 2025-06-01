@@ -83,7 +83,7 @@ class VideoAnalysisWorkflow:
             if status_callback:
                 status_callback("Preparing results...")
             
-            complete_results = self._prepare_complete_results(analysis_result, chat_details)
+            complete_results = await self._prepare_complete_results(analysis_result, chat_details)
             
             if progress_callback:
                 progress_callback(100)
@@ -115,7 +115,7 @@ class VideoAnalysisWorkflow:
         
         return sub_callback
     
-    def _prepare_complete_results(
+    async def _prepare_complete_results(
         self, 
         analysis_result: AnalysisResult, 
         chat_details: Optional[Dict[str, Any]]
@@ -129,6 +129,77 @@ class VideoAnalysisWorkflow:
         for task_name, task_output in analysis_result.task_outputs.items():
             task_outputs[task_name] = task_output.content
         
+        # Get transcript information using transcript service
+        transcript = None
+        transcript_segments = None
+        
+        try:
+            # Use the transcript service to get transcript data
+            transcript = await self.transcript_service.get_transcript(analysis_result.youtube_url, use_cache=True)
+            
+            # Get transcript segments using transcript service
+            timestamped_transcript, segments_list = await self.transcript_service.get_timestamped_transcript(
+                analysis_result.youtube_url, use_cache=True
+            )
+            
+            if segments_list:
+                transcript_segments = segments_list
+                logger.info(f"Retrieved {len(transcript_segments)} transcript segments")
+            
+        except Exception as e:
+            logger.warning(f"Could not retrieve transcript using transcript service: {str(e)}")
+            
+            # Fallback: try to get video data from cache
+            try:
+                from ..repositories import CacheRepository
+                from ..core import CacheManager
+                cache_manager = CacheManager()
+                cache_repo = CacheRepository(cache_manager)
+                
+                video_data = await cache_repo.get_video_data(analysis_result.video_id)
+                
+                if video_data:
+                    transcript = video_data.transcript if hasattr(video_data, 'transcript') else None
+                    
+                    if hasattr(video_data, 'transcript_segments') and video_data.transcript_segments:
+                        transcript_segments = [
+                            {
+                                "text": seg.text,
+                                "start": seg.start,
+                                "duration": seg.duration
+                            } for seg in video_data.transcript_segments
+                        ]
+                        
+            except Exception as fallback_error:
+                logger.warning(f"Fallback transcript retrieval also failed: {str(fallback_error)}")
+                
+        # Log the result
+        if transcript:
+            logger.info(f"Successfully retrieved transcript (length: {len(transcript)})")
+        else:
+            logger.warning("No transcript retrieved for complete results")
+        
+        # Try to get video info for complete results
+        video_info = None
+        try:
+            from ..repositories import YouTubeRepository
+            from ..core import CacheManager
+            cache_manager = CacheManager() 
+            youtube_repo = YouTubeRepository(cache_manager)
+            
+            video_info_obj = await youtube_repo._get_video_info(analysis_result.youtube_url)
+            if video_info_obj:
+                video_info = {
+                    "title": video_info_obj.title,
+                    "description": video_info_obj.description,
+                    "duration": getattr(video_info_obj, 'duration', None),
+                    "view_count": getattr(video_info_obj, 'view_count', None),
+                    "channel_name": getattr(video_info_obj, 'channel_name', None),
+                }
+        except Exception as e:
+            logger.warning(f"Could not get video info: {str(e)}")
+            video_info = {"title": "YouTube Video", "description": ""}
+
         results.update({
             # Legacy format fields
             "task_outputs": task_outputs,
@@ -137,6 +208,13 @@ class VideoAnalysisWorkflow:
             "token_usage": analysis_result.total_token_usage.to_dict() if analysis_result.total_token_usage else None,
             "timestamp": analysis_result.created_at.strftime("%Y-%m-%d %H:%M:%S"),
             "cached": analysis_result.cached,
+            
+            # Add transcript information
+            "transcript": transcript,
+            "transcript_segments": transcript_segments,
+            
+            # Add video info
+            "video_info": video_info,
             
             # Add chat details
             "chat_details": chat_details,

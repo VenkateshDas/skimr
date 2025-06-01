@@ -110,7 +110,11 @@ class SmartCacheRepository:
             entry.access_count += 1
             entry.last_accessed = datetime.now()
             
-            if not entry.is_expired:
+            # Check if the cached value is a coroutine (corrupted cache)
+            if asyncio.iscoroutine(entry.value):
+                logger.warning(f"Found corrupted cache entry (coroutine) for {full_key}, removing")
+                del self._memory_cache[full_key]
+            elif not entry.is_expired:
                 # Check if needs background refresh
                 if entry.ttl_seconds and entry.ttl_seconds < (ttl_hours * 3600 * (1 - refresh_threshold)):
                     await self._schedule_background_refresh(full_key, fetch_fn, ttl_hours)
@@ -124,15 +128,30 @@ class SmartCacheRepository:
         # Check persistent cache
         cached_value = self.cache_manager.get(cache_type, key)
         if cached_value:
-            # Add to memory cache
-            await self._store_in_memory(full_key, cached_value, ttl_hours)
-            logger.debug(f"Persistent cache hit for {full_key}")
-            return cached_value
+            # Validate cached value is not corrupted
+            if asyncio.iscoroutine(cached_value):
+                logger.warning(f"Found corrupted persistent cache entry (coroutine) for {full_key}, ignoring")
+                cached_value = None
+            else:
+                # Add to memory cache
+                await self._store_in_memory(full_key, cached_value, ttl_hours)
+                logger.debug(f"Persistent cache hit for {full_key}")
+                return cached_value
         
         # Cache miss - fetch fresh data
         logger.info(f"Cache miss for {full_key}, fetching fresh data")
         try:
-            fresh_value = await self._run_in_executor(fetch_fn)
+            # Check if fetch_fn is a coroutine function
+            if asyncio.iscoroutinefunction(fetch_fn):
+                fresh_value = await fetch_fn()
+            else:
+                fresh_value = await self._run_in_executor(fetch_fn)
+            
+            # Validate that fresh_value is not a coroutine before caching
+            if asyncio.iscoroutine(fresh_value):
+                logger.error(f"fetch_fn returned a coroutine instead of data for {full_key}, not caching")
+                return None
+                
             if fresh_value:
                 await self.set_with_ttl(cache_type, key, fresh_value, ttl_hours)
             return fresh_value
@@ -150,6 +169,11 @@ class SmartCacheRepository:
         """Set value with TTL in both memory and persistent cache."""
         full_key = f"{cache_type}:{key}"
         
+        # Validate value is not a coroutine
+        if asyncio.iscoroutine(value):
+            logger.error(f"Cannot cache coroutine object for {full_key}")
+            return
+        
         # Store in persistent cache
         try:
             self.cache_manager.set(cache_type, key, value)
@@ -163,6 +187,11 @@ class SmartCacheRepository:
     async def _store_in_memory(self, full_key: str, value: Any, ttl_hours: int) -> None:
         """Store value in memory cache with size tracking."""
         try:
+            # Validate value is not a coroutine
+            if asyncio.iscoroutine(value):
+                logger.error(f"Cannot store coroutine in memory cache for {full_key}")
+                return
+            
             # Calculate size
             size_bytes = len(json.dumps(value, default=str).encode('utf-8'))
             
@@ -230,7 +259,11 @@ class SmartCacheRepository:
         async def refresh_task():
             try:
                 logger.info(f"Background refresh for {full_key}")
-                fresh_value = await self._run_in_executor(fetch_fn)
+                # Check if fetch_fn is a coroutine function
+                if asyncio.iscoroutinefunction(fetch_fn):
+                    fresh_value = await fetch_fn()
+                else:
+                    fresh_value = await self._run_in_executor(fetch_fn)
                 if fresh_value:
                     cache_type, key = full_key.split(':', 1)
                     await self.set_with_ttl(cache_type, key, fresh_value, ttl_hours)
@@ -326,7 +359,8 @@ class CacheRepository:
         )
         
         # Defensive: Only try to parse if the structure is correct
-        if data and isinstance(data, dict) and "video_id" in data and "transcript" in data:
+        # Don't require transcript to be present since it might be None for some videos
+        if data and isinstance(data, dict) and "video_id" in data:
             try:
                 return VideoData.from_dict(data)
             except Exception as e:
@@ -488,6 +522,76 @@ class CacheRepository:
             "analysis", f"analysis_{result.video_id}", result.to_dict(), ttl_hours=168
         )
     
+    async def save_analysis_result(self, video_id: str, result: AnalysisResult) -> None:
+        """Store analysis result (alias for store_analysis_result)."""
+        await self.store_analysis_result(result)
+    
+    async def clear_corrupted_cache_entries(self) -> None:
+        """Clear any corrupted cache entries (coroutines)."""
+        try:
+            logger.info("Scanning for corrupted cache entries...")
+            
+            # Clear corrupted memory cache entries
+            keys_to_remove = []
+            for key, entry in self.smart_cache._memory_cache.items():
+                if asyncio.iscoroutine(entry.value):
+                    keys_to_remove.append(key)
+                    logger.warning(f"Found corrupted memory cache entry: {key}")
+            
+            for key in keys_to_remove:
+                del self.smart_cache._memory_cache[key]
+                logger.info(f"Removed corrupted memory cache entry: {key}")
+            
+            # Clear corrupted persistent cache entries
+            # Note: This is more complex as we'd need to iterate through all cache entries
+            # For now, we'll handle this case-by-case during get operations
+            
+            if keys_to_remove:
+                logger.info(f"Cleared {len(keys_to_remove)} corrupted cache entries")
+            else:
+                logger.debug("No corrupted cache entries found")
+                
+        except Exception as e:
+            logger.error(f"Error clearing corrupted cache entries: {str(e)}")
+
+    async def clear_video_cache(self, video_id: str) -> None:
+        """
+        Clear all cached data for a specific video.
+        
+        Args:
+            video_id: Video ID to clear cache for
+        """
+        try:
+            logger.info(f"Clearing cache for video {video_id}")
+            
+            # Clear from memory cache
+            keys_to_remove = []
+            for key in self.smart_cache._memory_cache.keys():
+                if video_id in key:
+                    keys_to_remove.append(key)
+            
+            for key in keys_to_remove:
+                del self.smart_cache._memory_cache[key]
+                logger.debug(f"Removed from memory cache: {key}")
+            
+            # Clear from persistent cache using the cache manager
+            # Clear video data
+            self.smart_cache.cache_manager.delete("video_data", video_id)
+            
+            # Clear analysis result
+            self.smart_cache.cache_manager.delete("analysis", f"analysis_{video_id}")
+            
+            # Clear any chat sessions (old format)
+            self.smart_cache.cache_manager.delete("chat", f"chat_{video_id}")
+            
+            # Clear new chat sessions
+            self.smart_cache.cache_manager.delete("chat_session", f"chat_{video_id}")
+            
+            logger.info(f"Successfully cleared cache for video {video_id}")
+            
+        except Exception as e:
+            logger.error(f"Error clearing cache for video {video_id}: {str(e)}")
+    
     def get_cache_stats(self) -> Dict[str, Any]:
         """Get cache statistics."""
         return self.smart_cache.get_cache_stats()
@@ -495,3 +599,117 @@ class CacheRepository:
     async def cleanup(self) -> None:
         """Cleanup cache repository."""
         await self.smart_cache.cleanup()
+
+    # Chat Session Caching Methods
+    async def get_chat_session(self, video_id: str) -> Optional[ChatSession]:
+        """Get cached chat session for a video."""
+        async def fetch_fresh():
+            return None  # Chat sessions are created on-demand
+        
+        data = await self.smart_cache.get_with_fallback(
+            "chat_session", f"chat_{video_id}", fetch_fresh, ttl_hours=168  # 1 week
+        )
+        
+        if data is None:
+            return None
+            
+        # Check if data is a dictionary
+        if not isinstance(data, dict):
+            logger.error(f"Invalid chat session data type: {type(data)}, expected dict")
+            return None
+        
+        try:
+            # Validate required fields are present
+            if "session_id" not in data or "video_id" not in data or "youtube_url" not in data:
+                logger.error(f"Missing required fields in chat session data for video {video_id}")
+                return None
+                
+            return ChatSession.from_dict(data)
+        except Exception as e:
+            logger.error(f"Error creating ChatSession from data: {str(e)}")
+            logger.error(f"Data type: {type(data)}")
+            logger.error(f"Data preview: {str(data)[:200]}...")
+            return None
+    
+    async def store_chat_session(self, chat_session: ChatSession) -> None:
+        """Store chat session in cache."""
+        try:
+            # Convert to dictionary for storage
+            chat_data = chat_session.to_dict()
+            
+            # Validate the dictionary is JSON serializable
+            try:
+                json.dumps(chat_data, default=str)
+            except (TypeError, ValueError) as e:
+                logger.error(f"chat_session data is not JSON serializable: {str(e)}")
+                # Try to clean the dictionary
+                chat_data = self._clean_dict_for_serialization(chat_data)
+            
+            # Store in cache with TTL (1 week)
+            await self.smart_cache.set_with_ttl(
+                "chat_session", f"chat_{chat_session.video_id}", chat_data, ttl_hours=168
+            )
+            logger.info(f"Stored chat session in cache for video {chat_session.video_id} with {len(chat_session.messages)} messages")
+            
+        except Exception as e:
+            logger.error(f"Error storing chat session in cache: {str(e)}")
+    
+    async def update_chat_session_messages(self, video_id: str, messages: List[Dict[str, Any]]) -> None:
+        """Update just the messages in an existing chat session."""
+        try:
+            # Get existing chat session
+            chat_session = await self.get_chat_session(video_id)
+            
+            if chat_session is None:
+                logger.warning(f"No existing chat session found for video {video_id}, cannot update messages")
+                return
+            
+            # Convert messages to ChatMessage objects
+            from ..models import ChatMessage, MessageRole
+            chat_messages = []
+            for msg_data in messages:
+                if isinstance(msg_data, dict):
+                    # Handle different message formats
+                    role_str = msg_data.get("role", "user")
+                    content = msg_data.get("content", "")
+                    
+                    try:
+                        role = MessageRole(role_str)
+                    except ValueError:
+                        # Default to USER if role is invalid
+                        role = MessageRole.USER
+                    
+                    chat_message = ChatMessage(
+                        role=role,
+                        content=content,
+                        metadata=msg_data.get("metadata")
+                    )
+                    chat_messages.append(chat_message)
+            
+            # Update the chat session messages
+            chat_session.messages = chat_messages
+            chat_session.updated_at = datetime.now()
+            
+            # Store the updated session
+            await self.store_chat_session(chat_session)
+            logger.info(f"Updated chat session messages for video {video_id} - {len(chat_messages)} messages")
+            
+        except Exception as e:
+            logger.error(f"Error updating chat session messages for video {video_id}: {str(e)}")
+    
+    async def clear_chat_session(self, video_id: str) -> None:
+        """Clear chat session for a specific video."""
+        try:
+            # Clear from memory cache
+            chat_key = f"chat_session:chat_{video_id}"
+            if chat_key in self.smart_cache._memory_cache:
+                del self.smart_cache._memory_cache[chat_key]
+                logger.debug(f"Removed chat session from memory cache: {chat_key}")
+            
+            # Clear from persistent cache
+            self.smart_cache.cache_manager.delete("chat_session", f"chat_{video_id}")
+            
+            logger.info(f"Successfully cleared chat session for video {video_id}")
+            
+        except Exception as e:
+            logger.error(f"Error clearing chat session for video {video_id}: {str(e)}")
