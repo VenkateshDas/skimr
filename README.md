@@ -43,10 +43,12 @@ Skimr addresses these challenges through an intelligent AI-driven approach:
 
 ### Core Analysis Engine
 - **Multi-Modal Transcript Processing** with automated extraction and timestamping
+- **Advanced Whisper Transcription** with multiple model options (whisper-1, gpt-4o-transcribe, gpt-4o-mini-transcribe)
 - **Intelligent Content Categorization** using specialized AI agents
 - **Context-Aware Classification** (Tutorial, Review, Interview, Educational, etc.)
 - **Comprehensive Video Summarization** with key point extraction
 - **Actionable Insights Generation** with recommended next steps
+- **Custom Instructions Support** for tailoring content generation outputs
 
 ### Interactive Intelligence
 - **Real-time Chat Interface** powered by LangGraph and RAG (Retrieval-Augmented Generation)
@@ -59,6 +61,7 @@ Skimr addresses these challenges through an intelligent AI-driven approach:
 - **LinkedIn Content Optimization** for professional networking
 - **Twitter Thread Generation** with influencer-style adaptation
 - **SEO-Optimized Summaries** for content marketing
+- **Customizable Output Formatting** through dynamic instructions
 
 ### Enterprise Features
 - **Multi-Tenant Authentication** with Supabase integration
@@ -78,6 +81,7 @@ Skimr addresses these challenges through an intelligent AI-driven approach:
   - Google API key (optional, for Gemini models)
 - **Tavily API key** (optional, for enhanced web search capabilities)
 - **Supabase credentials** (optional, for user authentication)
+- **FFmpeg** (required for audio processing with Whisper transcription)
 
 ### 🔧 Installation
 
@@ -170,6 +174,7 @@ docker run -p 8501:8501 --env-file .env skimr
    - Generate blog posts, LinkedIn content, or tweets on-demand
    - Utilize web search integration for current information enhancement
    - Customize content style and tone through the settings
+   - Apply custom instructions to tailor the output format and style
 
 4. **Settings Configuration**
    - Select preferred AI model (GPT-4, Gemini, Claude)
@@ -178,6 +183,27 @@ docker run -p 8501:8501 --env-file .env skimr
    - Toggle Phase 2 architecture features
 
 ### 🔧 Advanced Configuration
+
+#### Transcription Options
+```python
+# Supported Whisper models:
+transcription_models = {
+    "whisper-1": "Original Whisper model with detailed segmentation",
+    "gpt-4o-transcribe": "High-quality transcription with GPT-4o",
+    "gpt-4o-mini-transcribe": "Faster, cost-effective transcription"
+}
+```
+
+#### Custom Instructions
+The system supports custom instructions for content generation tasks:
+```yaml
+# Example custom instruction for blog post:
+"Focus on the technical aspects of the video and include code examples where relevant.
+Add a section discussing alternative approaches and compare them."
+
+# Example custom instruction for LinkedIn post:
+"Target this post toward software engineering managers highlighting team productivity benefits."
+```
 
 #### Model Selection
 ```python
@@ -286,22 +312,27 @@ skimr/
 │       ├── 📁 adapters/             # Interface adapters (Hexagonal Architecture)
 │       │   └── webapp_adapter.py    # WebApp interface adapter
 │       ├── 📁 core/                 # Core business entities and utilities
-│       │   ├── config.py           # Application configuration
-│       │   ├── cache_manager.py    # Smart caching implementation
-│       │   ├── youtube_client.py   # YouTube API client with pooling
-│       │   └── llm_manager.py      # Multi-provider LLM management
+│       │   ├── config.py            # Application configuration
+│       │   ├── cache_manager.py     # Smart caching implementation
+│       │   ├── youtube_client.py    # YouTube API client with pooling
+│       │   └── llm_manager.py       # Multi-provider LLM management
 │       ├── 📁 services/             # Business logic layer (Domain Services)
-│       │   ├── analysis_service.py # Video analysis orchestration
-│       │   ├── chat_service.py     # Interactive chat management
-│       │   ├── content_service.py  # Content generation services
+│       │   ├── analysis_service.py  # Video analysis orchestration
+│       │   ├── chat_service.py      # Interactive chat management
+│       │   ├── content_service.py   # Content generation services
 │       │   ├── transcript_service.py # Transcript processing
-│       │   ├── auth_service.py     # Authentication services
+│       │   ├── auth_service.py      # Authentication services
 │       │   └── user_stats_service.py # User analytics
+│       ├── 📁 transcription/        # Transcription subsystem
+│       │   ├── factory.py           # Transcription factory pattern
+│       │   ├── base.py              # Base transcriber interface
+│       │   ├── whisper.py           # OpenAI Whisper implementation
+│       │   └── models.py            # Transcription data models
 │       ├── 📁 workflows/            # Business process orchestration
 │       │   ├── video_analysis_workflow.py # Main analysis pipeline
 │       │   └── crew.py             # CrewAI agent orchestration
 │       ├── 📁 repositories/         # Data access layer
-│       │   └── cache_repository.py # Cache data persistence
+│       │   └── cache_repository.py  # Cache data persistence
 │       ├── 📁 models/              # Domain models and DTOs
 │       ├── 📁 ui/                  # User interface components
 │       │   ├── components.py       # Streamlit UI components
@@ -344,6 +375,7 @@ skimr/
 
 #### 4. **Factory Pattern**
 - **Service Creation**: Centralized service instantiation
+- **Transcription Management**: Flexible transcription provider selection
 - **Configuration Management**: Dynamic service configuration
 - **Dependency Resolution**: Automatic dependency injection
 
@@ -389,6 +421,7 @@ skimr/
 - **LangGraph** (0.4.7): Stateful agent workflow management
 - **LangChain** (0.3.25): LLM application development framework
 - **OpenAI GPT Models**: Primary language models
+- **OpenAI Whisper**: Advanced audio transcription
 - **Anthropic Claude**: Alternative LLM provider
 - **Google Gemini**: Additional LLM options
 - **FAISS** (1.10.0): Vector similarity search
@@ -398,6 +431,7 @@ skimr/
 - **Streamlit** (1.44.1): Interactive web application framework
 - **Supabase** (2.15.2): Backend-as-a-Service with authentication
 - **Pydantic** (2.11.5): Data validation and settings management
+- **FFmpeg**: Audio processing for transcription
 
 ### 🔧 Data Processing
 - **youtube-transcript-api** (1.0.3): Transcript extraction
@@ -445,6 +479,9 @@ ENABLE_BACKGROUND_REFRESH=true           # Proactive cache updates
 ENABLE_AUTH=true                         # User authentication
 ENABLE_YOUTUBE_API=true                  # YouTube API integration
 ENABLE_WEB_SEARCH=true                   # Tavily search integration
+
+# === Transcription Settings ===
+DEFAULT_WHISPER_MODEL=gpt-4o-transcribe  # Default transcription model
 ```
 
 ### 🎛️ Model Configuration
@@ -497,157 +534,78 @@ class VideoAnalysisService:
 #### ChatService  
 ```python
 class ChatService:
-    async def stream_response(
-        self,
-        video_id: str,
-        user_message: str,
-        chat_history: List[Message]
-    ) -> AsyncIterator[str]:
-        """Stream chat response with RAG context"""
+    async def initialize_chat(
+        self, 
+        video_id: str, 
+        transcript: Transcript
+    ) -> None:
+        """Initialize chat for a specific video"""
         
-    async def clear_agent_cache(self, video_id: str) -> None:
-        """Clear cached chat agent for video"""
+    async def get_response(
+        self, 
+        user_input: str,
+        chat_history: List[Dict]
+    ) -> AsyncGenerator[str, None]:
+        """Get streaming response to user query"""
+```
+
+#### TranscriptService
+```python
+class TranscriptService:
+    async def get_transcript(
+        self, 
+        video_id: str,
+        language: str = "en",
+        use_cache: bool = True,
+        transcription_model: str = None
+    ) -> Transcript:
+        """Get video transcript with specified options"""
 ```
 
 #### ContentService
 ```python
 class ContentService:
-    async def generate_single_content(
-        self,
+    async def generate_content(
+        self, 
+        video_id: str,
         content_type: str,
-        analysis_result: AnalysisResult,
-        settings: ContentSettings
-    ) -> ContentOutput:
-        """Generate specific content type on-demand"""
-```
-
-### 📝 Data Models
-
-```python
-@dataclass
-class AnalysisResult:
-    video_id: str
-    title: str
-    category: str
-    context_type: str
-    summary: str
-    analysis: str
-    action_plan: Optional[str] = None
-    blog_post: Optional[str] = None
-    linkedin_post: Optional[str] = None
-    tweet: Optional[str] = None
-    transcript_data: Optional[TranscriptData] = None
-    
-@dataclass  
-class PerformanceMetrics:
-    analysis_time: float
-    cache_hit_rate: float
-    token_usage: TokenUsage
-    active_connections: int
+        custom_instructions: str = None
+    ) -> str:
+        """Generate content based on video analysis"""
 ```
 
 ## 🤝 Contributing
 
-We welcome contributions from the community! Please follow our contribution guidelines to ensure smooth collaboration.
+Contributions are welcome! Here's how you can help:
 
-### 🚀 Getting Started for Contributors
+1. **Fork the repository**
+2. **Create a feature branch**
+   ```bash
+   git checkout -b feature/amazing-feature
+   ```
+3. **Commit your changes**
+   ```bash
+   git commit -m 'Add some amazing feature'
+   ```
+4. **Push to the branch**
+   ```bash
+   git push origin feature/amazing-feature
+   ```
+5. **Open a Pull Request**
 
-1. **Fork the repository** and create a feature branch
-2. **Set up development environment** following the installation guide
-3. **Read the architecture documentation** to understand the codebase
-4. **Review open issues** for contribution opportunities
+Please make sure to update tests as appropriate and adhere to the existing coding style.
 
-### 📋 Development Guidelines
+## 📜 License
 
-#### Code Style
-- **PEP 8 compliance** for Python code formatting
-- **Type hints** required for all function signatures
-- **Docstrings** for all public methods and classes
-- **Comprehensive logging** for debugging and monitoring
+This project is licensed under the MIT License - see the LICENSE file for details.
 
-#### Testing Requirements
-```bash
-# Run unit tests
-pytest tests/unit/
+## 📫 Contact
 
-# Run integration tests  
-pytest tests/integration/
-
-# Run performance tests
-pytest tests/performance/
-
-# Check code coverage
-pytest --cov=src/ tests/
-```
-
-#### Pull Request Process
-1. **Create feature branch** from `main`
-2. **Implement changes** with appropriate tests
-3. **Update documentation** as needed
-4. **Ensure all tests pass** and coverage is maintained
-5. **Submit pull request** with detailed description
-
-### 🏗️ Architecture Contribution Guidelines
-
-When contributing to the architecture:
-
-1. **Follow Service Layer Pattern**: Keep business logic in services
-2. **Maintain Interface Contracts**: Don't break existing APIs
-3. **Add Comprehensive Tests**: Cover new functionality thoroughly
-4. **Update Documentation**: Keep architecture diagrams current
-5. **Performance Considerations**: Ensure changes don't degrade performance
-
-### 🐛 Bug Reports
-
-Please include:
-- **Detailed reproduction steps**
-- **Expected vs actual behavior**
-- **Environment information** (Python version, OS, etc.)
-- **Relevant log outputs**
-- **Screenshots** if applicable
-
-### 💡 Feature Requests
-
-For new features:
-- **Describe the problem** being solved
-- **Outline the proposed solution**
-- **Consider architectural impact**
-- **Estimate complexity and effort**
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- **[CrewAI](https://github.com/joaomdmoura/crewAI)**: Revolutionary multi-agent orchestration framework
-- **[LangGraph](https://github.com/langchain-ai/langgraph)**: Powerful stateful agent framework
-- **[LangChain](https://github.com/langchain-ai/langchain)**: Comprehensive LLM application toolkit
-- **[Streamlit](https://streamlit.io/)**: Exceptional rapid web application development
-- **[OpenAI](https://openai.com/)**: Advanced language model capabilities
-- **[Supabase](https://supabase.com/)**: Outstanding backend-as-a-service platform
-
-## 📞 Support
-
-For support and questions:
-
-- **📚 Documentation**: Check this README and inline code documentation
-- **🐛 Issues**: Report bugs via GitHub Issues
-- **💬 Discussions**: Join GitHub Discussions for questions
-- **📧 Email**: [support@tryskimr.site](mailto:support@tryskimr.site)
-
-## TODO
-
-- [] Optimize the Cache storage (Learn the best way to do this)
-- [] Improve the Langgraph agent --> Multi step RAG agent
+For questions, feedback, or support, please open an issue on GitHub or contact the maintainers directly.
 
 ---
 
 <div align="center">
-
-**Made with ❤️ by Venkatesh**
-
-[🌟 Star us on GitHub](https://github.com/VenkateshDas/crewai_yt_agent) • [🐛 Report a Bug](https://github.com/VenkateshDas/crewai_yt_agent/issues) • [💡 Request a Feature](https://github.com/VenkateshDas/crewai_yt_agent/issues)
-
+<p>Made with ❤️ by the Skimr Team</p>
 </div>
 
