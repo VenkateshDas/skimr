@@ -9,13 +9,8 @@ __version__ = "0.1.0"
 
 # Import commonly used modules to make them available when importing the package
 from .utils.logging import get_logger
-from .auth import init_auth_state, login, init_supabase, display_auth_ui, get_current_user, logout, require_auth, check_guest_usage
-from .analysis import run_analysis, run_direct_analysis, extract_category
-from .crew import YouTubeAnalysisCrew
-from .chat import setup_chat_for_video
-from .transcript import get_transcript_with_timestamps
-from .ui import get_category_class, extract_youtube_thumbnail, load_css, setup_sidebar, create_welcome_message, setup_user_menu
-from .core import CacheManager, LLMManager, YouTubeClient
+from .services.auth_service import init_auth_state, login, init_supabase, display_auth_ui, get_current_user, logout, require_auth, check_guest_usage
+from .ui.helpers import get_category_class, extract_youtube_thumbnail, load_css, get_skimr_logo_base64
 
 # For backward compatibility, still export some utils
 from .utils.youtube_utils import validate_youtube_url, get_cached_transcription, cache_transcription
@@ -35,30 +30,11 @@ __all__ = [
     'require_auth',
     'check_guest_usage',
     
-    # Analysis
-    'run_analysis',
-    'run_direct_analysis',
-    'extract_category',
-    'YouTubeAnalysisCrew',
-    
-    # Chat
-    'setup_chat_for_video',
-    
-    # Transcript
-    'get_transcript_with_timestamps',
-    
     # UI
     'get_category_class',
     'extract_youtube_thumbnail',
     'load_css',
-    'setup_sidebar',
-    'create_welcome_message',
-    'setup_user_menu',
-    
-    # Core Components
-    'CacheManager',
-    'LLMManager', 
-    'YouTubeClient',
+    'get_skimr_logo_base64',
     
     # Backward compatibility utilities
     'validate_youtube_url',

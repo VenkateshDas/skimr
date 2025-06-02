@@ -61,3 +61,7 @@ db/
 
 # do not upload PRD markdown files
 PRD.md
+
+.claude
+.devcontainer/
+.pytest_cache/

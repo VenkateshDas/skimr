@@ -5,7 +5,7 @@ from typing import Optional, Tuple, Any
 import streamlit as st
 from supabase import create_client, Client
 from functools import wraps
-from .utils.logging import get_logger
+from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -54,6 +54,8 @@ def init_auth_state():
     if "show_auth" not in st.session_state:
         # Don't show auth UI by default
         st.session_state.show_auth = False
+    if "guest_analysis_count" not in st.session_state:
+        st.session_state.guest_analysis_count = 0
 
 def check_guest_usage(max_guest_analyses=1):
     """

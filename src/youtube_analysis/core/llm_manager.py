@@ -10,16 +10,17 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from crewai import LLM
 
 from ..utils.logging import get_logger
+from .config import config
 
 logger = get_logger("llm_manager")
 
 @dataclass
 class LLMConfig:
     """LLM configuration settings."""
-    model: str = "gpt-4o-mini"
-    temperature: float = 0.2
-    max_tokens: Optional[int] = None
-    timeout: int = 60
+    model: str = config.llm.default_model
+    temperature: float = config.llm.default_temperature
+    max_tokens: Optional[int] = config.llm.default_max_tokens
+    timeout: int = config.llm.default_timeout
 
 class LLMManager:
     """Unified LLM manager for consistent model initialization."""
@@ -30,10 +31,10 @@ class LLMManager:
     def get_config(self) -> LLMConfig:
         """Get LLM configuration from environment or defaults."""
         return LLMConfig(
-            model=os.environ.get("LLM_MODEL", "gpt-4o-mini"),
-            temperature=float(os.environ.get("LLM_TEMPERATURE", "0.2")),
-            max_tokens=int(os.environ.get("LLM_MAX_TOKENS", "0")) or None,
-            timeout=int(os.environ.get("LLM_TIMEOUT", "60"))
+            model=os.environ.get("LLM_MODEL", config.llm.default_model),
+            temperature=float(os.environ.get("LLM_TEMPERATURE", str(config.llm.default_temperature))),
+            max_tokens=int(os.environ.get("LLM_MAX_TOKENS", "0")) or config.llm.default_max_tokens,
+            timeout=int(os.environ.get("LLM_TIMEOUT", str(config.llm.default_timeout)))
         )
     
     def _get_cache_key(self, config: LLMConfig, llm_type: str) -> str:

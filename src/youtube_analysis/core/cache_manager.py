@@ -24,8 +24,15 @@ class CacheManager:
     """Unified cache manager for all caching operations."""
     
     def __init__(self, config: Optional[CacheConfig] = None):
+        # Ensure cache directory is in project root, not relative to current working directory
+        default_cache_dir = os.environ.get("CACHE_DIR", None)
+        if not default_cache_dir:
+            # Navigate up from src/youtube_analysis/core/ to project root
+            project_root = Path(__file__).parent.parent.parent.parent
+            default_cache_dir = str(project_root / "analysis_cache")
+        
         self.config = config or CacheConfig(
-            cache_dir=os.environ.get("CACHE_DIR", "analysis_cache"),
+            cache_dir=default_cache_dir,
             expiry_days=int(os.environ.get("CACHE_EXPIRY_DAYS", "7")),
             max_size_mb=int(os.environ.get("CACHE_MAX_SIZE_MB", "500"))
         )
@@ -37,6 +44,7 @@ class CacheManager:
         Path(self.config.cache_dir, "analysis").mkdir(exist_ok=True)
         Path(self.config.cache_dir, "transcripts").mkdir(exist_ok=True)
         Path(self.config.cache_dir, "highlights").mkdir(exist_ok=True)
+        Path(self.config.cache_dir, "video_data").mkdir(exist_ok=True)
     
     def _get_cache_key(self, data: Union[str, Dict[str, Any]]) -> str:
         """Generate cache key using configured hash algorithm."""
@@ -78,12 +86,31 @@ class CacheManager:
             logger.warning(f"Error reading cache {cache_path}: {e}")
             return None
     
-    def set(self, cache_type: str, key: str, data: Dict[str, Any]) -> bool:
+    def set(self, cache_type: str, key: str, data: Any) -> bool:
         """Set cached data."""
         cache_key = self._get_cache_key(key)
         cache_path = self._get_cache_path(cache_type, cache_key)
         
         try:
+            # Ensure the directory exists
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Ensure data is a dictionary or convert it to one
+            if isinstance(data, str):
+                try:
+                    # Try to parse as JSON
+                    parsed_data = json.loads(data)
+                    if isinstance(parsed_data, dict):
+                        data = parsed_data
+                    else:
+                        data = {"value": parsed_data}
+                except json.JSONDecodeError:
+                    # Not valid JSON, wrap as value
+                    data = {"value": data}
+            elif not isinstance(data, dict):
+                # Handle non-dictionary data by wrapping it
+                data = {"value": str(data)}
+            
             # Remove non-serializable objects
             clean_data = self._clean_data_for_serialization(data)
             

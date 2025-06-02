@@ -1,4 +1,4 @@
-"""Chat functionality for YouTube video analysis."""
+"""Chat utility functions for YouTube video analysis."""
 
 import os
 import time
@@ -21,11 +21,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from .utils.logging import get_logger
-from .core import LLMManager, YouTubeClient, CacheManager
+from .logging import get_logger
+from ..core import LLMManager, YouTubeClient, CacheManager
+from ..core.config import CHAT_PROMPT_TEMPLATE
 
 # Configure logging
-logger = get_logger("chat")
+logger = get_logger("chat_utils")
 
 # Initialize core components
 llm_manager = LLMManager()
@@ -159,7 +160,7 @@ def create_agent_graph(vectorstore: FAISS, video_metadata: Dict[str, Any], has_t
     logger.info(f"Creating chat agent with model: {model_name}, temperature: {temperature}")
     
     # Use LLMManager to get the language model
-    from .core.llm_manager import LLMConfig
+    from ..core.llm_manager import LLMConfig
     config = LLMConfig(model=model_name, temperature=temperature)
     llm = llm_manager.get_langchain_llm(config)
 
@@ -220,33 +221,14 @@ def create_agent_graph(vectorstore: FAISS, video_metadata: Dict[str, Any], has_t
     # Create tools list
     tools = [yt_retriever_tool, video_info_tool, search_tool]
     
-    # Create system message with video description
+    # Create system message with video description using template from config
     video_title = video_metadata.get('title', 'Unknown')
     video_description = video_metadata.get('description', 'No description available')
     
-    system_message_content = f"""You are an AI assistant that helps users understand YouTube video content.
-You have access to the transcript of a YouTube video titled "{video_title}" with the following description:
-
-DESCRIPTION:
-{video_description}
-
-You can answer questions about this video and also handle general questions not related to the video.
-
-For questions about the video content, use the YouTube_Video_Search tool to find relevant information in the transcript.
-For questions about the video itself (URL, ID, title, description), use the YouTube_Video_Info tool.
-If the user asks about a concept that is not clearly explained in the video, use the Tavily_Search tool to find relevant information online.
-Also, if the question is not related to the video but if it is a valid question that can be answered by the internet, use the Tavily_Search tool to find relevant information online.
-For general questions not related to the video, use your own knowledge to answer or use the Tavily_Search tool to find relevant information online.
-
-Always be helpful, accurate, and concise in your responses.
-If you don't know the answer to a question about the video, say so rather than making up information.
-If you are searching the internet for information, then use clever search queries to get the most relevant information.
-
-IMPORTANT: When answering questions about the video content, always include the timestamp citations from the transcript in your response. 
-These timestamps indicate when in the video the information was mentioned. Format citations like [MM:SS] in your answers.
-
-IMPORTANT: Use the chat history to maintain context of the conversation. Refer back to previous questions and answers when relevant.
-"""
+    system_message_content = CHAT_PROMPT_TEMPLATE.format(
+        video_title=video_title,
+        video_description=video_description
+    )
     
     logger.info(f"System message: {system_message_content[:200]}...")
     
@@ -323,7 +305,7 @@ def format_timestamped_results(docs):
     
     return "\n\n".join(results)
 
-def setup_chat_for_video(youtube_url: str, transcript: str, transcript_list: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+async def setup_chat_for_video_async(youtube_url: str, transcript: str, transcript_list: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """
     Set up the chat functionality for a YouTube video.
     
@@ -344,14 +326,27 @@ def setup_chat_for_video(youtube_url: str, transcript: str, transcript_list: Opt
         
         # Log that we're using the already retrieved transcript
         logger.info(f"Setting up chat using already retrieved transcript for video ID: {video_id}")
+        if transcript is None:
+            logger.error(f"Transcript is None for video ID: {video_id}")
+            return None
         logger.info(f"Transcript length: {len(transcript)} characters")
-        if transcript_list:
-            logger.info(f"Transcript list contains {len(transcript_list)} segments")
+        
+        # Validate transcript_list if provided
+        has_timestamps = False
+        if transcript_list is not None:
+            if len(transcript_list) > 0:
+                logger.info(f"Transcript list contains {len(transcript_list)} segments")
+                has_timestamps = True
+            else:
+                logger.warning(f"Transcript list is empty for video ID: {video_id}")
+                transcript_list = None
+        else:
+            logger.info(f"No timestamped transcript available for video ID: {video_id}")
         
         # Get video information from the already retrieved data
         try:
             # Use the video_id to get video info
-            video_info_obj = asyncio.run(youtube_client.get_video_info(youtube_url))
+            video_info_obj = await youtube_client.get_video_info(youtube_url)
             
             if not video_info_obj:
                 logger.warning(f"Could not get video info for {video_id}, using default values")
@@ -381,13 +376,14 @@ def setup_chat_for_video(youtube_url: str, transcript: str, transcript_list: Opt
             }
             logger.info(f"Using default video info for chat with {video_id}")
         
-        # Check if we have timestamped transcript
-        has_timestamps = transcript_list is not None and len(transcript_list) > 0
-        
         # Create vector store from the provided transcript
         logger.info(f"Creating vector store from the provided transcript (has timestamps: {has_timestamps})")
-        vectorstore = create_vectorstore(transcript, transcript_list)
-        logger.info(f"Successfully created vector store for chat (with timestamps: {has_timestamps})")
+        try:
+            vectorstore = create_vectorstore(transcript, transcript_list)
+            logger.info(f"Successfully created vector store for chat (with timestamps: {has_timestamps})")
+        except Exception as e:
+            logger.error(f"Error creating vector store: {str(e)}")
+            return None
         
         # Create video metadata
         video_metadata = {
@@ -400,8 +396,12 @@ def setup_chat_for_video(youtube_url: str, transcript: str, transcript_list: Opt
         # Create agent using the same model as specified in environment variables
         # This ensures the chat model is the same as the analysis model
         logger.info("Creating chat agent with the same model settings as analysis")
-        agent = create_agent_graph(vectorstore, video_metadata, has_timestamps)
-        logger.info("Successfully created agent for chat")
+        try:
+            agent = create_agent_graph(vectorstore, video_metadata, has_timestamps)
+            logger.info("Successfully created agent for chat")
+        except Exception as e:
+            logger.error(f"Error creating chat agent: {str(e)}")
+            return None
         
         # Create thread ID for persistence
         thread_id = f"thread_{video_id}_{int(time.time())}"

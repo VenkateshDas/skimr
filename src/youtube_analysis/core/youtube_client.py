@@ -106,11 +106,15 @@ class YouTubeClient:
                 logger.debug(f"Using cached transcript for {video_id}")
                 return cached.get("text")
         
+        # Run blocking transcript API call in executor
+        loop = asyncio.get_event_loop()
         try:
-            transcript_list = YouTubeTranscriptApi.get_transcript(
-                video_id, 
-                languages=['en', 'de', 'ta', 'es', 'fr']
+            transcript_list = await loop.run_in_executor(
+                None, self._get_transcript_sync, video_id
             )
+            
+            if not transcript_list:
+                return None
             
             transcript = ' '.join([item['text'] for item in transcript_list])
             
@@ -124,6 +128,46 @@ class YouTubeClient:
         except Exception as e:
             logger.error(f"Error getting transcript for {video_id}: {e}")
             return None
+    
+    def _get_transcript_sync(self, video_id: str) -> Optional[List[Dict[str, Any]]]:
+        """Synchronous transcript fetching with retry logic."""
+        languages = ['en', 'de', 'ta', 'es', 'fr', 'hi', 'ar', 'zh', 'ja', 'ko']
+        
+        for attempt in range(3):  # 3 retry attempts
+            try:
+                # Try different language combinations
+                if attempt == 0:
+                    # First attempt: try primary languages
+                    transcript_list = YouTubeTranscriptApi.get_transcript(
+                        video_id, languages=['en', 'de', 'ta', 'es', 'fr']
+                    )
+                elif attempt == 1:
+                    # Second attempt: try all available languages
+                    transcript_list = YouTubeTranscriptApi.get_transcript(
+                        video_id, languages=languages
+                    )
+                else:
+                    # Third attempt: let the API decide
+                    transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+                
+                if transcript_list:
+                    return transcript_list
+                    
+            except Exception as e:
+                error_msg = str(e).lower()
+                if 'no element found' in error_msg or 'xml' in error_msg:
+                    logger.warning(f"XML parsing error for {video_id} on attempt {attempt + 1}: {e}")
+                    if attempt < 2:
+                        continue  # Retry
+                elif 'could not retrieve' in error_msg or 'transcript' in error_msg:
+                    logger.warning(f"No transcript available for {video_id}: {e}")
+                    break  # Don't retry for missing transcripts
+                else:
+                    logger.error(f"Unexpected error getting transcript for {video_id} on attempt {attempt + 1}: {e}")
+                    if attempt < 2:
+                        continue  # Retry for unexpected errors
+        
+        return None
     
     async def get_transcript_with_timestamps(self, url: str, use_cache: bool = True) -> Tuple[Optional[str], Optional[List[Dict[str, Any]]]]:
         """Get transcript with timestamps."""
@@ -139,11 +183,15 @@ class YouTubeClient:
                 logger.debug(f"Using cached timestamped transcript for {video_id}")
                 return cached.get("formatted"), cached.get("raw")
         
+        # Run blocking transcript API call in executor
+        loop = asyncio.get_event_loop()
         try:
-            transcript_list = YouTubeTranscriptApi.get_transcript(
-                video_id,
-                languages=['en', 'de', 'ta', 'es', 'fr']
+            transcript_list = await loop.run_in_executor(
+                None, self._get_transcript_sync, video_id
             )
+            
+            if not transcript_list:
+                return None, None
             
             # Format with timestamps
             formatted_transcript = []

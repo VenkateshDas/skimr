@@ -27,7 +27,8 @@ def get_cache_dir() -> Path:
     cache_dir = os.environ.get("ANALYSIS_CACHE_DIR", None)
     if not cache_dir:
         # Use default cache directory in project root
-        project_root = Path(__file__).parent.parent.parent
+        # Navigate up from src/youtube_analysis/utils/ to project root
+        project_root = Path(__file__).parent.parent.parent.parent
         cache_dir = project_root / "analysis_cache"
     else:
         cache_dir = Path(os.path.expanduser(cache_dir))
@@ -131,6 +132,33 @@ def cache_analysis(video_id: str, analysis_results: Dict[str, Any]) -> None:
             'timestamp': datetime.now().isoformat()
         }
         
+        # Helper function to check if an object is serializable
+        def is_json_serializable(obj):
+            try:
+                json.dumps(obj)
+                return True
+            except (TypeError, OverflowError):
+                return False
+                
+        # Helper function to recursively clean non-serializable objects
+        def clean_for_json(obj):
+            if isinstance(obj, dict):
+                return {k: clean_for_json(v) for k, v in obj.items() 
+                        if not k.startswith('_') and not callable(v)}
+            elif isinstance(obj, list):
+                return [clean_for_json(item) for item in obj]
+            elif hasattr(obj, '__dict__'):
+                # Convert custom objects to dictionaries
+                return clean_for_json(vars(obj))
+            elif is_json_serializable(obj):
+                return obj
+            else:
+                # Convert non-serializable objects to strings
+                return str(obj)
+        
+        # Clean the analysis results
+        cache_data['analysis_results'] = clean_for_json(cache_data['analysis_results'])
+        
         # Remove non-serializable objects from the analysis results
         # The agent object from chat_details is not serializable
         if ('chat_details' in cache_data['analysis_results'] and 
@@ -145,7 +173,7 @@ def cache_analysis(video_id: str, analysis_results: Dict[str, Any]) -> None:
         logger.info(f"Cached analysis results for video {video_id}")
         
     except Exception as e:
-        logger.warning(f"Error caching analysis for video {video_id}: {str(e)}", exc_info=True)
+        logger.error(f"Error writing cache {cache_file}: {str(e)}", exc_info=True)
 
 def clear_analysis_cache(video_id: str) -> bool:
     """
