@@ -15,7 +15,7 @@ from moviepy.video.fx.fadein import fadein
 from moviepy.video.fx.fadeout import fadeout
 
 from .logging import get_logger
-from ..config import CACHE_DIR, YOUTUBE_API_KEY
+from ..core.config import CACHE_DIR, YOUTUBE_API_KEY
 from .youtube_utils import extract_video_id, get_cache_key, get_video_info, is_cache_valid, get_cache_dir
 
 # Configure logging

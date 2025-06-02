@@ -30,7 +30,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 COPY . .
 
 # Create necessary directories for data persistence
-RUN mkdir -p /app/output /app/db
+RUN mkdir -p /app/output /app/analysis_cache /app/transcript_cache
 
 # Expose the port Streamlit runs on
 EXPOSE 8501
@@ -41,5 +41,5 @@ ENV STREAMLIT_SERVER_PORT=8501
 ENV STREAMLIT_SERVER_HEADLESS=true
 ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
 
-# Command to run the application
-CMD ["streamlit", "run", "youtube_analysis_webapp.py", "--server.port=8501", "--server.address=0.0.0.0"] 
+# Command to run the application (updated path to reflect refactored structure)
+CMD ["streamlit", "run", "src/youtube_analysis_webapp.py", "--server.port=8501", "--server.address=0.0.0.0"] 

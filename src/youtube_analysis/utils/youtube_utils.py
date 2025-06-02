@@ -21,7 +21,7 @@ except ImportError:
     PYTUBE_AVAILABLE = False
 
 from .logging import get_logger
-from ..config import YOUTUBE_API_KEY, CACHE_EXPIRY_DAYS, CACHE_DIR
+from ..core.config import YOUTUBE_API_KEY, CACHE_EXPIRY_DAYS, CACHE_DIR
 
 # Configure logging
 logger = get_logger(__name__)

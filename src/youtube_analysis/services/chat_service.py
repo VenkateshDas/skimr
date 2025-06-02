@@ -1,4 +1,4 @@
-"""Service for chat operations."""
+"""Service for chat operations with video context."""
 
 import asyncio
 import uuid
@@ -6,15 +6,16 @@ from typing import Optional, Dict, Any, List, Union, AsyncGenerator, Tuple
 from datetime import datetime
 from ..models import ChatSession, ChatMessage, MessageRole, VideoData, AnalysisResult
 from ..repositories import CacheRepository, YouTubeRepository
-from ..chat import setup_chat_for_video_async
+from ..utils.chat_utils import setup_chat_for_video_async
 from ..utils.logging import get_logger
 from ..core import LLMManager
+from ..core.config import CHAT_WELCOME_TEMPLATE, config
 
 logger = get_logger("chat_service")
 
 
 class ChatService:
-    """Service for chat-related operations."""
+    """Service for chat operations with video context."""
     
     def __init__(self, cache_repository: CacheRepository, youtube_repository: YouTubeRepository):
         self.cache_repo = cache_repository
@@ -32,8 +33,8 @@ class ChatService:
         video_id: str,
         chat_history: List[Dict[str, str]],
         current_question: str,
-        model_name: str = "gpt-4o-mini",
-        temperature: float = 0.2
+        model_name: str = None,
+        temperature: float = None
     ) -> AsyncGenerator[Tuple[str, Optional[Dict[str, int]]], None]:
         """
         Stream a chat response for a video with token usage tracking.
@@ -42,13 +43,19 @@ class ChatService:
             video_id: Video ID
             chat_history: List of previous chat messages
             current_question: Current user question
-            model_name: LLM model to use
-            temperature: Temperature for generation
+            model_name: LLM model to use (defaults to config)
+            temperature: Temperature for generation (defaults to config)
             
         Yields:
             Tuple of (response chunk, token usage dict for final response)
         """
         try:
+            # Use config defaults if not provided
+            if model_name is None:
+                model_name = config.llm.default_model
+            if temperature is None:
+                temperature = config.llm.default_temperature
+            
             logger.info(f"Streaming chat response for video {video_id}")
             
             # Get chat agent for video
@@ -151,12 +158,18 @@ class ChatService:
         video_id: str,
         chat_history: List[Dict[str, str]],
         current_question: str,
-        model_name: str = "gpt-4o-mini",
-        temperature: float = 0.2
+        model_name: str = None,
+        temperature: float = None
     ) -> AsyncGenerator[str, None]:
         """
         Stream a chat response for a video (original method without token tracking).
         """
+        # Use config defaults if not provided
+        if model_name is None:
+            model_name = config.llm.default_model
+        if temperature is None:
+            temperature = config.llm.default_temperature
+            
         async for chunk, token_usage in self.stream_response(video_id, chat_history, current_question, model_name, temperature):
             if chunk:  # Only yield non-empty chunks
                 yield chunk
@@ -485,7 +498,7 @@ class ChatService:
             
             # Add welcome message if session is empty
             if len(chat_session.messages) == 0:
-                welcome_msg = f"Hello! I'm your AI assistant for the video \"{video_title}\". Ask me any questions about the content, and I'll do my best to answer based on the transcript. I'll include timestamps in my answers to help you locate information in the video."
+                welcome_msg = CHAT_WELCOME_TEMPLATE.format(video_title=video_title)
                 
                 chat_session.add_assistant_message(welcome_msg)
                 

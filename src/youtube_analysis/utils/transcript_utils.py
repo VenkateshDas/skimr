@@ -4,11 +4,11 @@ import re
 import asyncio
 from typing import Dict, List, Tuple, Any, Optional
 
-from .utils.logging import get_logger
-from .core import YouTubeClient, CacheManager
+from .logging import get_logger
+from ..core import YouTubeClient, CacheManager
 
 # Configure logging
-logger = get_logger("transcript")
+logger = get_logger("transcript_utils")
 
 # Initialize core components
 cache_manager = CacheManager()

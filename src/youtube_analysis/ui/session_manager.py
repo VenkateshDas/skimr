@@ -2,11 +2,12 @@
 Streamlit session state management utilities.
 """
 
+import asyncio
 import streamlit as st
 from typing import Dict, Any, Optional
 from datetime import datetime
-
 from ..utils.logging import get_logger
+from ..core.config import config, get_default_settings
 
 logger = get_logger("session_manager")
 
@@ -29,22 +30,21 @@ class StreamlitSessionManager:
     @staticmethod
     def initialize_auth_state():
         """Initialize authentication-related session state."""
-        defaults = {
+        auth_defaults = {
             "authenticated": False,
             "user": None,
-            "auth_initialized": False,
             "show_auth": False,
             "guest_analysis_count": 0
         }
         
-        for key, default_value in defaults.items():
+        for key, default_value in auth_defaults.items():
             if key not in st.session_state:
                 st.session_state[key] = default_value
     
     @staticmethod
     def initialize_analysis_state():
         """Initialize analysis-related session state."""
-        defaults = {
+        analysis_defaults = {
             "analysis_complete": False,
             "analysis_results": None,
             "analysis_start_time": None,
@@ -53,48 +53,53 @@ class StreamlitSessionManager:
             "video_info": None,
             "transcript_list": None,
             "transcript_text": None,
-            "timestamped_transcript": None
+            "timestamped_transcript": None,
+            "highlights_video_path": None,
+            "highlights_segments": None
         }
         
-        for key, default_value in defaults.items():
+        for key, default_value in analysis_defaults.items():
             if key not in st.session_state:
                 st.session_state[key] = default_value
     
     @staticmethod
     def initialize_chat_state():
         """Initialize chat-related session state."""
-        defaults = {
+        chat_defaults = {
             "chat_enabled": False,
             "chat_messages": [],
             "chat_details": None,
-            "chat_user_input": "",
+            "chat_user_input": None,
             "thinking_message_shown": False,
             "thinking_placeholder": None,
             "user_input_disabled": False
         }
         
-        for key, default_value in defaults.items():
+        for key, default_value in chat_defaults.items():
             if key not in st.session_state:
                 st.session_state[key] = default_value
     
     @staticmethod
     def initialize_ui_state():
         """Initialize UI-related session state."""
-        defaults = {
+        ui_defaults = {
+            "current_youtube_url": "",
             "content_generation_pending": False,
             "content_type_generated": None,
-            "highlights_video_path": None,
-            "highlights_segments": None
+            "is_chat_streaming": False,
+            "current_chat_question": None,
+            "chat_streaming_placeholder": "",
+            "chat_streaming_placeholder_ref": None
         }
         
-        for key, default_value in defaults.items():
+        for key, default_value in ui_defaults.items():
             if key not in st.session_state:
                 st.session_state[key] = default_value
     
     @staticmethod
     def initialize_token_tracking():
         """Initialize comprehensive token usage tracking."""
-        defaults = {
+        token_defaults = {
             "cumulative_token_usage": {
                 "total_tokens": 0,
                 "prompt_tokens": 0,
@@ -112,7 +117,7 @@ class StreamlitSessionManager:
             }
         }
         
-        for key, default_value in defaults.items():
+        for key, default_value in token_defaults.items():
             if key not in st.session_state:
                 st.session_state[key] = default_value
     
@@ -120,13 +125,7 @@ class StreamlitSessionManager:
     def initialize_settings():
         """Initialize application settings."""
         defaults = {
-            "settings": {
-                "model": "gpt-4o-mini",
-                "temperature": 0.2,
-                "use_cache": True,
-                "use_optimized": True,
-                "analysis_types": ["Summary & Classification"]
-            }
+            "settings": get_default_settings()
         }
         
         for key, default_value in defaults.items():
@@ -231,6 +230,7 @@ class StreamlitSessionManager:
     def add_token_usage(operation_type: str, token_usage: Dict[str, int], operation_name: Optional[str] = None):
         """
         Add token usage for an operation and update cumulative totals.
+        Also saves to cache if video_id is available.
         
         Args:
             operation_type: Type of operation ('initial_analysis', 'additional_content', 'chat')
@@ -261,6 +261,22 @@ class StreamlitSessionManager:
         StreamlitSessionManager._recalculate_cumulative_usage()
         
         logger.info(f"Added token usage for {operation_type}: {token_usage}")
+        
+        # Auto-save to cache if video_id is available
+        video_id = st.session_state.get("video_id")
+        webapp_adapter = st.session_state.get("webapp_adapter")
+        
+        if video_id and webapp_adapter:
+            try:
+                # Save token usage to cache immediately
+                StreamlitSessionManager.auto_save_token_usage(webapp_adapter, video_id)
+                logger.debug(f"Auto-saved token usage to cache for video {video_id}")
+            except Exception as e:
+                logger.warning(f"Auto-save token usage failed (non-critical): {str(e)}")
+        elif video_id and not webapp_adapter:
+            logger.debug(f"Video ID available ({video_id}) but webapp_adapter not found in session state")
+        else:
+            logger.debug("Video ID or webapp_adapter not available for auto-save")
 
     @staticmethod
     def _recalculate_cumulative_usage():
@@ -306,7 +322,9 @@ class StreamlitSessionManager:
     @staticmethod
     def get_settings() -> Dict[str, Any]:
         """Get current settings from session state."""
-        return st.session_state.get("settings", {})
+        if "settings" not in st.session_state:
+            StreamlitSessionManager.initialize_settings()
+        return st.session_state.settings
     
     @staticmethod
     def update_settings(new_settings: Dict[str, Any]):
@@ -345,6 +363,24 @@ class StreamlitSessionManager:
         logger.info("Analysis results stored in session state")
     
     @staticmethod
+    def store_analysis_results_without_token_override(results: Dict[str, Any]):
+        """
+        Store analysis results in session state WITHOUT overwriting token usage.
+        Used when token usage has been restored from cache.
+        """
+        st.session_state.analysis_results = results
+        st.session_state.analysis_complete = True
+        
+        # Do NOT add initial analysis token usage here - it should already be loaded from cache
+        # Only add if no token usage exists at all (fallback scenario)
+        if "token_usage_breakdown" not in st.session_state or not st.session_state.token_usage_breakdown.get("initial_analysis"):
+            if "token_usage" in results and results["token_usage"]:
+                StreamlitSessionManager.add_token_usage("initial_analysis", results["token_usage"])
+                logger.info("Added initial analysis token usage as fallback (no cached data found)")
+        
+        logger.info("Analysis results stored in session state (preserving cached token usage)")
+    
+    @staticmethod
     def initialize_all_states():
         """Initialize all session state variables (alias for initialize_all)."""
         StreamlitSessionManager.initialize_all()
@@ -356,6 +392,9 @@ class StreamlitSessionManager:
         # Also reset any pending UI flags
         st.session_state.content_generation_pending = False
         st.session_state.content_type_generated = None
+        # Clear webapp_adapter reference
+        if hasattr(st.session_state, 'webapp_adapter'):
+            delattr(st.session_state, 'webapp_adapter')
         logger.info("Session state reset for new analysis")
     
     @staticmethod
@@ -427,10 +466,26 @@ class StreamlitSessionManager:
             True if messages were loaded, False otherwise
         """
         try:
-            import asyncio
+            # Use asyncio to run the async cache operation
+            async def load_chat_messages():
+                return await webapp_adapter.get_cached_chat_messages(video_id)
             
-            # Get cached messages
-            cached_messages = asyncio.run(webapp_adapter.get_cached_chat_messages(video_id))
+            # Run the async operation - handle existing event loop
+            cached_messages = None
+            try:
+                cached_messages = asyncio.run(load_chat_messages())
+            except RuntimeError:
+                # Event loop already running, need to use different approach
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # Create a task and run it
+                    task = loop.create_task(load_chat_messages())
+                    # This is tricky - we need to wait for completion but can't use await in sync function
+                    # For now, log warning and return False
+                    logger.warning("Event loop already running, cannot load chat messages synchronously")
+                    return False
+                else:
+                    cached_messages = loop.run_until_complete(load_chat_messages())
             
             if cached_messages:
                 st.session_state.chat_messages = cached_messages
@@ -457,18 +512,35 @@ class StreamlitSessionManager:
             True if messages were saved, False otherwise
         """
         try:
-            import asyncio
-            
             chat_messages = st.session_state.get("chat_messages", [])
             
-            if chat_messages:
-                success = asyncio.run(webapp_adapter.save_chat_messages_to_cache(video_id, chat_messages))
-                if success:
-                    logger.debug(f"Saved {len(chat_messages)} chat messages to cache for video {video_id}")
-                return success
-            else:
+            if not chat_messages:
                 logger.debug(f"No chat messages to save for video {video_id}")
                 return True
+            
+            # Use asyncio to run the async cache operation
+            async def save_chat_messages():
+                return await webapp_adapter.save_chat_messages_to_cache(video_id, chat_messages)
+            
+            # Run the async operation - handle existing event loop
+            try:
+                success = asyncio.run(save_chat_messages())
+            except RuntimeError:
+                # Event loop already running, need to use different approach
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # Create a task and run it
+                    task = loop.create_task(save_chat_messages())
+                    # This is tricky - we need to wait for completion but can't use await in sync function
+                    # For now, log warning and return False
+                    logger.warning("Event loop already running, cannot save chat messages synchronously")
+                    return False
+                else:
+                    success = loop.run_until_complete(save_chat_messages())
+            
+            if success:
+                logger.debug(f"Saved {len(chat_messages)} chat messages to cache for video {video_id}")
+            return success
                 
         except Exception as e:
             logger.error(f"Error saving chat messages to cache: {str(e)}")
@@ -490,8 +562,6 @@ class StreamlitSessionManager:
             True if chat was initialized successfully, False otherwise
         """
         try:
-            import asyncio
-            
             # First try to load cached messages
             if StreamlitSessionManager.load_cached_chat_messages(webapp_adapter, video_id):
                 # Messages loaded from cache
@@ -501,11 +571,27 @@ class StreamlitSessionManager:
                 return True
             
             # No cached messages, initialize with welcome
-            welcome_messages = asyncio.run(
-                webapp_adapter.initialize_chat_session_with_welcome(
+            async def initialize_welcome():
+                return await webapp_adapter.initialize_chat_session_with_welcome(
                     video_id, youtube_url, video_title, chat_details
                 )
-            )
+            
+            # Run the async operation - handle existing event loop
+            welcome_messages = None
+            try:
+                welcome_messages = asyncio.run(initialize_welcome())
+            except RuntimeError:
+                # Event loop already running, need to use different approach
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # Create a task and run it
+                    task = loop.create_task(initialize_welcome())
+                    # This is tricky - we need to wait for completion but can't use await in sync function
+                    # For now, log warning and return False
+                    logger.warning("Event loop already running, cannot initialize chat with welcome synchronously")
+                    return False
+                else:
+                    welcome_messages = loop.run_until_complete(initialize_welcome())
             
             if welcome_messages:
                 st.session_state.chat_messages = welcome_messages
@@ -534,9 +620,26 @@ class StreamlitSessionManager:
             True if cleared successfully, False otherwise
         """
         try:
-            import asyncio
+            # Use asyncio to run the async cache operation
+            async def clear_chat_session():
+                return await webapp_adapter.clear_chat_session(video_id)
             
-            success = asyncio.run(webapp_adapter.clear_chat_session(video_id))
+            # Run the async operation - handle existing event loop
+            try:
+                success = asyncio.run(clear_chat_session())
+            except RuntimeError:
+                # Event loop already running, need to use different approach
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # Create a task and run it
+                    task = loop.create_task(clear_chat_session())
+                    # This is tricky - we need to wait for completion but can't use await in sync function
+                    # For now, log warning and return False
+                    logger.warning("Event loop already running, cannot clear chat session synchronously")
+                    return False
+                else:
+                    success = loop.run_until_complete(clear_chat_session())
+            
             if success:
                 logger.info(f"Cleared cached chat session for video {video_id}")
             return success
@@ -560,3 +663,357 @@ class StreamlitSessionManager:
             StreamlitSessionManager.save_chat_messages_to_cache(webapp_adapter, video_id)
         except Exception as e:
             logger.warning(f"Auto-save of chat messages failed: {str(e)}")
+    
+    @staticmethod
+    async def auto_save_chat_messages_async(webapp_adapter, video_id: str):
+        """
+        Automatically save chat messages when they are updated (async version).
+        Call this after adding new messages to session state.
+        
+        Args:
+            webapp_adapter: WebAppAdapter instance
+            video_id: Video ID
+        """
+        try:
+            # Save in background, don't block UI
+            await StreamlitSessionManager.save_chat_messages_to_cache_async(webapp_adapter, video_id)
+        except Exception as e:
+            logger.warning(f"Auto-save of chat messages failed: {str(e)}")
+
+    # Token Usage Caching Methods
+    @staticmethod
+    def load_cached_token_usage(webapp_adapter, video_id: str) -> bool:
+        """
+        Load token usage data from cache and update session state.
+        
+        Args:
+            webapp_adapter: WebAppAdapter instance for cache access
+            video_id: Video ID
+            
+        Returns:
+            True if token usage was loaded, False otherwise
+        """
+        try:
+            # Use asyncio to run the async cache operation
+            async def load_token_usage():
+                # Use the webapp adapter's method to get cached token usage
+                return await webapp_adapter.get_cached_token_usage(video_id)
+            
+            # Run the async operation - handle existing event loop
+            cached_data = None
+            try:
+                cached_data = asyncio.run(load_token_usage())
+            except RuntimeError:
+                # Event loop already running, need to use different approach
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # Create a task and run it
+                    task = loop.create_task(load_token_usage())
+                    # This is tricky - we need to wait for completion but can't use await in sync function
+                    # For now, log warning and return False
+                    logger.warning("Event loop already running, cannot load token usage synchronously")
+                    return False
+                else:
+                    cached_data = loop.run_until_complete(load_token_usage())
+            
+            if cached_data and isinstance(cached_data, dict):
+                # Restore token usage data to session state
+                if "cumulative_usage" in cached_data:
+                    st.session_state.cumulative_token_usage = cached_data["cumulative_usage"]
+                
+                if "breakdown" in cached_data:
+                    st.session_state.token_usage_breakdown = cached_data["breakdown"]
+                
+                logger.info(f"Loaded cached token usage for video {video_id}")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error loading cached token usage for video {video_id}: {str(e)}")
+            return False
+    
+    @staticmethod
+    def save_token_usage_to_cache(webapp_adapter, video_id: str) -> bool:
+        """
+        Save current token usage data to cache.
+        
+        Args:
+            webapp_adapter: WebAppAdapter instance for cache access
+            video_id: Video ID
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Get current token usage from session state
+            if "token_usage_breakdown" not in st.session_state or "cumulative_token_usage" not in st.session_state:
+                logger.warning(f"No token usage data to save for video {video_id}")
+                return False
+            
+            breakdown = st.session_state.token_usage_breakdown
+            cumulative = st.session_state.cumulative_token_usage
+            
+            # Use asyncio to run the async cache operation
+            async def save_token_usage():
+                # Get cache repository through service factory
+                cache_repo = webapp_adapter.service_factory.get_cache_repository()
+                from ..models import TokenUsageCache, TokenUsage
+                
+                # Create TokenUsageCache object from session state data
+                token_cache = TokenUsageCache(video_id=video_id)
+                
+                # Set cumulative usage
+                if cumulative:
+                    token_cache.cumulative_usage = TokenUsage.from_dict(cumulative)
+                
+                # Set initial analysis
+                if breakdown.get("initial_analysis"):
+                    token_cache.initial_analysis = TokenUsage.from_dict(breakdown["initial_analysis"])
+                
+                # Set additional content
+                if breakdown.get("additional_content"):
+                    for content_type, usage_data in breakdown["additional_content"].items():
+                        token_cache.additional_content[content_type] = TokenUsage.from_dict(usage_data)
+                
+                # Set chat usage
+                chat_data = breakdown.get("chat", {})
+                if chat_data and any(chat_data.get(key, 0) > 0 for key in ["total_tokens", "prompt_tokens", "completion_tokens"]):
+                    # Extract message count and create TokenUsage without it
+                    chat_usage_dict = {k: v for k, v in chat_data.items() if k != "message_count"}
+                    token_cache.chat_usage = TokenUsage.from_dict(chat_usage_dict)
+                    token_cache.chat_message_count = chat_data.get("message_count", 0)
+                
+                # Store in cache
+                await cache_repo.store_token_usage_cache(token_cache)
+                return True
+            
+            # Run the async operation - handle existing event loop
+            try:
+                success = asyncio.run(save_token_usage())
+            except RuntimeError:
+                # Event loop already running, need to use different approach
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # Create a task and run it
+                    task = loop.create_task(save_token_usage())
+                    # This is tricky - we need to wait for completion but can't use await in sync function
+                    # For now, log warning and return False
+                    logger.warning("Event loop already running, cannot save token usage synchronously")
+                    return False
+                else:
+                    success = loop.run_until_complete(save_token_usage())
+            
+            if success:
+                logger.info(f"Saved token usage to cache for video {video_id}")
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error saving token usage to cache for video {video_id}: {str(e)}")
+            return False
+    
+    @staticmethod
+    def auto_save_token_usage(webapp_adapter, video_id: str):
+        """
+        Automatically save token usage to cache (non-blocking).
+        
+        Args:
+            webapp_adapter: WebAppAdapter instance
+            video_id: Video ID
+        """
+        try:
+            StreamlitSessionManager.save_token_usage_to_cache(webapp_adapter, video_id)
+        except Exception as e:
+            logger.debug(f"Auto-save token usage failed (non-critical): {str(e)}")
+    
+    @staticmethod
+    async def initialize_token_usage_with_cache_async(webapp_adapter, video_id: str) -> bool:
+        """
+        Initialize token usage tracking with cached data if available (async version).
+        
+        Args:
+            webapp_adapter: WebAppAdapter instance
+            video_id: Video ID
+            
+        Returns:
+            True if loaded from cache, False if initialized fresh
+        """
+        # First initialize empty token tracking
+        StreamlitSessionManager.initialize_token_tracking()
+        
+        try:
+            # Get cached token usage directly
+            cached_data = await webapp_adapter.get_cached_token_usage(video_id)
+            
+            if cached_data and isinstance(cached_data, dict):
+                # Restore token usage data to session state
+                if "cumulative_usage" in cached_data:
+                    st.session_state.cumulative_token_usage = cached_data["cumulative_usage"]
+                
+                if "breakdown" in cached_data:
+                    st.session_state.token_usage_breakdown = cached_data["breakdown"]
+                
+                logger.info(f"Initialized token usage from cache for video {video_id}")
+                return True
+            else:
+                logger.info(f"Initialized fresh token usage tracking for video {video_id}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error initializing token usage with cache: {str(e)}")
+            return False
+    
+    @staticmethod
+    def initialize_token_usage_with_cache(webapp_adapter, video_id: str) -> bool:
+        """
+        Initialize token usage tracking with cached data if available.
+        
+        Args:
+            webapp_adapter: WebAppAdapter instance
+            video_id: Video ID
+            
+        Returns:
+            True if loaded from cache, False if initialized fresh
+        """
+        # First initialize empty token tracking
+        StreamlitSessionManager.initialize_token_tracking()
+        
+        # Try to load from cache - use simpler approach that works in sync context
+        try:
+            # Check if we're already in an async context
+            import asyncio
+            loop = None
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # No running loop, we can use asyncio.run
+                pass
+            
+            if loop and loop.is_running():
+                # We're in an async context, cannot use sync method reliably
+                logger.warning("Cannot load token usage synchronously from async context. Use async version.")
+                return False
+            else:
+                # Not in async context, can use asyncio.run
+                async def load_cached_data():
+                    return await webapp_adapter.get_cached_token_usage(video_id)
+                
+                cached_data = asyncio.run(load_cached_data())
+                
+                if cached_data and isinstance(cached_data, dict):
+                    # Restore token usage data to session state
+                    if "cumulative_usage" in cached_data:
+                        st.session_state.cumulative_token_usage = cached_data["cumulative_usage"]
+                    
+                    if "breakdown" in cached_data:
+                        st.session_state.token_usage_breakdown = cached_data["breakdown"]
+                    
+                    logger.info(f"Initialized token usage from cache for video {video_id}")
+                    return True
+                else:
+                    logger.info(f"Initialized fresh token usage tracking for video {video_id}")
+                    return False
+                    
+        except Exception as e:
+            logger.error(f"Error initializing token usage with cache: {str(e)}")
+            return False
+
+    # Async Chat Caching Methods
+    @staticmethod
+    async def load_cached_chat_messages_async(webapp_adapter, video_id: str) -> bool:
+        """
+        Load chat messages from cache and update session state (async version).
+        
+        Args:
+            webapp_adapter: WebAppAdapter instance
+            video_id: Video ID
+            
+        Returns:
+            True if messages were loaded, False otherwise
+        """
+        try:
+            cached_messages = await webapp_adapter.get_cached_chat_messages(video_id)
+            
+            if cached_messages:
+                st.session_state.chat_messages = cached_messages
+                logger.info(f"Loaded {len(cached_messages)} cached chat messages for video {video_id}")
+                return True
+            else:
+                logger.debug(f"No cached chat messages found for video {video_id}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error loading cached chat messages: {str(e)}")
+            return False
+    
+    @staticmethod
+    async def save_chat_messages_to_cache_async(webapp_adapter, video_id: str) -> bool:
+        """
+        Save current chat messages to cache (async version).
+        
+        Args:
+            webapp_adapter: WebAppAdapter instance
+            video_id: Video ID
+            
+        Returns:
+            True if messages were saved, False otherwise
+        """
+        try:
+            chat_messages = st.session_state.get("chat_messages", [])
+            
+            if not chat_messages:
+                logger.debug(f"No chat messages to save for video {video_id}")
+                return True
+            
+            success = await webapp_adapter.save_chat_messages_to_cache(video_id, chat_messages)
+            
+            if success:
+                logger.debug(f"Saved {len(chat_messages)} chat messages to cache for video {video_id}")
+            return success
+                
+        except Exception as e:
+            logger.error(f"Error saving chat messages to cache: {str(e)}")
+            return False
+    
+    @staticmethod
+    async def initialize_chat_with_cache_async(webapp_adapter, video_id: str, youtube_url: str, video_title: str, chat_details: Optional[Dict[str, Any]] = None) -> bool:
+        """
+        Initialize chat by loading from cache or creating with welcome message (async version).
+        
+        Args:
+            webapp_adapter: WebAppAdapter instance
+            video_id: Video ID
+            youtube_url: YouTube URL
+            video_title: Video title
+            chat_details: Chat details from analysis
+            
+        Returns:
+            True if chat was initialized successfully, False otherwise
+        """
+        try:
+            # First try to load cached messages
+            if await StreamlitSessionManager.load_cached_chat_messages_async(webapp_adapter, video_id):
+                # Messages loaded from cache
+                st.session_state.chat_enabled = True
+                st.session_state.chat_details = chat_details
+                logger.info(f"Chat initialized from cache for video {video_id}")
+                return True
+            
+            # No cached messages, initialize with welcome
+            welcome_messages = await webapp_adapter.initialize_chat_session_with_welcome(
+                video_id, youtube_url, video_title, chat_details
+            )
+            
+            if welcome_messages:
+                st.session_state.chat_messages = welcome_messages
+                st.session_state.chat_enabled = True
+                st.session_state.chat_details = chat_details
+                logger.info(f"Chat initialized with welcome message for video {video_id}")
+                return True
+            else:
+                logger.warning(f"Failed to initialize chat session for video {video_id}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error initializing chat with cache: {str(e)}")
+            return False

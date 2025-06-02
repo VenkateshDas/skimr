@@ -27,7 +27,8 @@ def get_cache_dir() -> Path:
     cache_dir = os.environ.get("ANALYSIS_CACHE_DIR", None)
     if not cache_dir:
         # Use default cache directory in project root
-        project_root = Path(__file__).parent.parent.parent
+        # Navigate up from src/youtube_analysis/utils/ to project root
+        project_root = Path(__file__).parent.parent.parent.parent
         cache_dir = project_root / "analysis_cache"
     else:
         cache_dir = Path(os.path.expanduser(cache_dir))

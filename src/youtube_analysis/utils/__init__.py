@@ -12,6 +12,10 @@ from .youtube_utils import (
     cache_transcription,
     clean_markdown_fences
 )
+from .transcript_utils import (
+    get_transcript_with_timestamps,
+    get_transcript_with_timestamps_async
+)
 
 __all__ = [
     'setup_logger',
@@ -22,5 +26,7 @@ __all__ = [
     'get_cache_key',
     'get_cached_transcription',
     'cache_transcription',
-    'clean_markdown_fences'
+    'clean_markdown_fences',
+    'get_transcript_with_timestamps',
+    'get_transcript_with_timestamps_async'
 ]

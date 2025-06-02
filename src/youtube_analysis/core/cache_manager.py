@@ -24,8 +24,15 @@ class CacheManager:
     """Unified cache manager for all caching operations."""
     
     def __init__(self, config: Optional[CacheConfig] = None):
+        # Ensure cache directory is in project root, not relative to current working directory
+        default_cache_dir = os.environ.get("CACHE_DIR", None)
+        if not default_cache_dir:
+            # Navigate up from src/youtube_analysis/core/ to project root
+            project_root = Path(__file__).parent.parent.parent.parent
+            default_cache_dir = str(project_root / "analysis_cache")
+        
         self.config = config or CacheConfig(
-            cache_dir=os.environ.get("CACHE_DIR", "analysis_cache"),
+            cache_dir=default_cache_dir,
             expiry_days=int(os.environ.get("CACHE_EXPIRY_DAYS", "7")),
             max_size_mb=int(os.environ.get("CACHE_MAX_SIZE_MB", "500"))
         )

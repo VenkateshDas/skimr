@@ -229,6 +229,22 @@ class WebAppAdapter:
             except Exception as e:
                 logger.warning(f"Could not update cache with new content: {e}")
             
+            # Explicitly save token usage to cache if available
+            if token_usage and isinstance(token_usage, dict):
+                try:
+                    success = await self.save_token_usage_to_cache(
+                        video_id, 
+                        "additional_content", 
+                        token_usage, 
+                        task_name
+                    )
+                    if success:
+                        logger.info(f"Saved token usage to cache for {content_type}: {token_usage}")
+                    else:
+                        logger.warning(f"Failed to save token usage to cache for {content_type}")
+                except Exception as e:
+                    logger.warning(f"Error saving token usage to cache for {content_type}: {e}")
+            
             logger.info(f"{content_type} generated successfully")
             return content, None, token_usage
             
@@ -380,37 +396,127 @@ class WebAppAdapter:
             return None, None, error_msg
     
     def clear_cache_for_video(self, video_id: str) -> bool:
+        """Clear all cached data for a specific video."""
+        try:
+            # Clear analysis cache
+            success1 = clear_analysis_cache(video_id)
+            
+            # Clear highlights cache if available
+            try:
+                success2 = clear_highlights_cache(video_id)
+            except Exception as e:
+                logger.warning(f"Could not clear highlights cache: {e}")
+                success2 = True  # Don't fail if highlights cache not available
+            
+            # Clear service layer cache
+            success3 = asyncio.run(self._clear_service_cache(video_id))
+            
+            # Clear token usage cache
+            success4 = asyncio.run(self._clear_token_usage_cache(video_id))
+            
+            if all([success1, success2, success3, success4]):
+                logger.info(f"Successfully cleared all cache for video {video_id}")
+                return True
+            else:
+                logger.warning(f"Partial cache clear for video {video_id}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error clearing cache for video {video_id}: {e}")
+            return False
+    
+    async def _clear_service_cache(self, video_id: str) -> bool:
+        """Clear service layer cache for a video."""
+        try:
+            workflow = self.service_factory.get_video_analysis_workflow()
+            # Access cache repository through analysis service
+            cache_repo = workflow.analysis_service.cache_repo
+            await cache_repo.clear_video_cache(video_id)
+            return True
+        except Exception as e:
+            logger.error(f"Error clearing service cache: {e}")
+            return False
+    
+    async def _clear_token_usage_cache(self, video_id: str) -> bool:
+        """Clear token usage cache for a video."""
+        try:
+            workflow = self.service_factory.get_video_analysis_workflow()
+            # Access cache repository through analysis service
+            cache_repo = workflow.analysis_service.cache_repo
+            await cache_repo.clear_token_usage_cache(video_id)
+            return True
+        except Exception as e:
+            logger.error(f"Error clearing token usage cache: {e}")
+            return False
+
+    # Token Usage Caching Methods
+    async def get_cached_token_usage(self, video_id: str) -> Optional[Dict[str, Any]]:
         """
-        Clear all caches for a specific video.
+        Get cached token usage data for a video.
         
         Args:
             video_id: Video ID
             
         Returns:
-            True if cache was cleared successfully
+            Dictionary with token usage data or None if not found
         """
         try:
-            logger.info(f"Clearing cache for video {video_id}")
-            
-            # Clear analysis cache
-            analysis_cleared = clear_analysis_cache(video_id)
-            
-            # Clear highlights cache
-            highlights_cleared = clear_highlights_cache(video_id)
-            
-            # Clear from Phase 2 cache repository
-            try:
-                cache_repo = self.service_factory.get_cache_repository()
-                asyncio.run(cache_repo.clear_video_cache(video_id))
-                logger.info(f"Cleared Phase 2 cache for video {video_id}")
-            except Exception as e:
-                logger.warning(f"Could not clear Phase 2 cache: {e}")
-            
-            return analysis_cleared or highlights_cleared
-            
+            workflow = self.service_factory.get_video_analysis_workflow()
+            # Access cache repository through analysis service
+            cache_repo = workflow.analysis_service.cache_repo
+            return await cache_repo.get_token_usage_for_session_manager(video_id)
         except Exception as e:
-            logger.error(f"Error clearing cache: {e}")
+            logger.error(f"Error getting cached token usage for {video_id}: {e}")
+            return None
+    
+    async def save_token_usage_to_cache(
+        self, 
+        video_id: str, 
+        operation_type: str,
+        token_usage: Dict[str, int],
+        operation_name: Optional[str] = None
+    ) -> bool:
+        """
+        Save token usage to cache.
+        
+        Args:
+            video_id: Video ID
+            operation_type: Type of operation ('initial_analysis', 'additional_content', 'chat')
+            token_usage: Token usage dictionary
+            operation_name: Name of the specific operation (for additional_content)
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            workflow = self.service_factory.get_video_analysis_workflow()
+            # Access cache repository through analysis service
+            cache_repo = workflow.analysis_service.cache_repo
+            from ..models import TokenUsage
+            token_usage_obj = TokenUsage.from_dict(token_usage)
+            await cache_repo.update_token_usage_cache(
+                video_id, operation_type, token_usage_obj, operation_name
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error saving token usage to cache: {e}")
             return False
+    
+    async def initialize_token_usage_cache(self, video_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Initialize token usage cache for a video.
+        
+        Args:
+            video_id: Video ID
+            
+        Returns:
+            Cached token usage data if available, None otherwise
+        """
+        try:
+            return await self.get_cached_token_usage(video_id)
+        except Exception as e:
+            logger.error(f"Error initializing token usage cache: {e}")
+            return None
     
     async def cleanup_resources(self):
         """Cleanup adapter resources."""

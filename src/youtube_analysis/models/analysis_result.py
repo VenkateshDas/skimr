@@ -75,6 +75,153 @@ class TokenUsage:
 
 
 @dataclass
+class TokenUsageCache:
+    """
+    Comprehensive token usage tracking for caching.
+    
+    This stores all token usage breakdowns for a video analysis session,
+    allowing for complete restoration of token usage statistics when
+    loading cached results.
+    """
+    video_id: str
+    cumulative_usage: TokenUsage = field(default_factory=TokenUsage)
+    initial_analysis: Optional[TokenUsage] = None
+    additional_content: Dict[str, TokenUsage] = field(default_factory=dict)
+    chat_usage: Optional[TokenUsage] = None
+    chat_message_count: int = 0
+    created_at: datetime = field(default_factory=datetime.now)
+    last_updated: datetime = field(default_factory=datetime.now)
+    
+    def add_initial_analysis(self, token_usage: TokenUsage) -> None:
+        """Add initial analysis token usage."""
+        self.initial_analysis = token_usage
+        self._recalculate_cumulative()
+        self.last_updated = datetime.now()
+    
+    def add_additional_content(self, content_type: str, token_usage: TokenUsage) -> None:
+        """Add additional content generation token usage."""
+        self.additional_content[content_type] = token_usage
+        self._recalculate_cumulative()
+        self.last_updated = datetime.now()
+    
+    def add_chat_usage(self, token_usage: TokenUsage) -> None:
+        """Add chat token usage (cumulative)."""
+        if self.chat_usage is None:
+            self.chat_usage = token_usage
+        else:
+            self.chat_usage = self.chat_usage.add(token_usage)
+        self.chat_message_count += 1
+        self._recalculate_cumulative()
+        self.last_updated = datetime.now()
+    
+    def _recalculate_cumulative(self) -> None:
+        """Recalculate cumulative token usage from all sources."""
+        self.cumulative_usage = TokenUsage()
+        
+        # Add initial analysis
+        if self.initial_analysis:
+            self.cumulative_usage = self.cumulative_usage.add(self.initial_analysis)
+        
+        # Add additional content
+        for content_usage in self.additional_content.values():
+            self.cumulative_usage = self.cumulative_usage.add(content_usage)
+        
+        # Add chat
+        if self.chat_usage:
+            self.cumulative_usage = self.cumulative_usage.add(self.chat_usage)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "video_id": self.video_id,
+            "cumulative_usage": self.cumulative_usage.to_dict(),
+            "initial_analysis": self.initial_analysis.to_dict() if self.initial_analysis else None,
+            "additional_content": {
+                key: usage.to_dict() 
+                for key, usage in self.additional_content.items()
+            },
+            "chat_usage": self.chat_usage.to_dict() if self.chat_usage else None,
+            "chat_message_count": self.chat_message_count,
+            "created_at": self.created_at.isoformat(),
+            "last_updated": self.last_updated.isoformat()
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "TokenUsageCache":
+        """Create from dictionary."""
+        # Parse cumulative usage
+        cumulative_usage = TokenUsage()
+        if data.get("cumulative_usage"):
+            cumulative_usage = TokenUsage.from_dict(data["cumulative_usage"])
+        
+        # Parse initial analysis
+        initial_analysis = None
+        if data.get("initial_analysis"):
+            initial_analysis = TokenUsage.from_dict(data["initial_analysis"])
+        
+        # Parse additional content
+        additional_content = {}
+        if data.get("additional_content"):
+            for key, usage_data in data["additional_content"].items():
+                additional_content[key] = TokenUsage.from_dict(usage_data)
+        
+        # Parse chat usage
+        chat_usage = None
+        if data.get("chat_usage"):
+            chat_usage = TokenUsage.from_dict(data["chat_usage"])
+        
+        # Parse timestamps
+        created_at = datetime.now()
+        if data.get("created_at"):
+            try:
+                created_at = datetime.fromisoformat(data["created_at"])
+            except (ValueError, TypeError):
+                pass
+        
+        last_updated = datetime.now()
+        if data.get("last_updated"):
+            try:
+                last_updated = datetime.fromisoformat(data["last_updated"])
+            except (ValueError, TypeError):
+                pass
+        
+        return cls(
+            video_id=data["video_id"],
+            cumulative_usage=cumulative_usage,
+            initial_analysis=initial_analysis,
+            additional_content=additional_content,
+            chat_usage=chat_usage,
+            chat_message_count=data.get("chat_message_count", 0),
+            created_at=created_at,
+            last_updated=last_updated
+        )
+    
+    def to_session_manager_format(self) -> Dict[str, Any]:
+        """
+        Convert to the format expected by StreamlitSessionManager.
+        
+        Returns:
+            Dictionary with 'cumulative_usage' and 'breakdown' keys
+        """
+        breakdown = {
+            "initial_analysis": self.initial_analysis.to_dict() if self.initial_analysis else {},
+            "additional_content": {
+                key: usage.to_dict() 
+                for key, usage in self.additional_content.items()
+            },
+            "chat": {
+                **(self.chat_usage.to_dict() if self.chat_usage else {"total_tokens": 0, "prompt_tokens": 0, "completion_tokens": 0}),
+                "message_count": self.chat_message_count
+            }
+        }
+        
+        return {
+            "cumulative_usage": self.cumulative_usage.to_dict(),
+            "breakdown": breakdown
+        }
+
+
+@dataclass
 class TaskOutput:
     """Represents output from a single analysis task."""
     task_name: str

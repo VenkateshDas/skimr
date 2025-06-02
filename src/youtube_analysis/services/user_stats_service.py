@@ -2,7 +2,7 @@
 
 from typing import Optional, Dict, Any
 import logging
-from .auth import init_supabase, init_supabase_admin, get_current_user
+from .auth_service import init_supabase, init_supabase_admin, get_current_user
 
 logger = logging.getLogger(__name__)
 

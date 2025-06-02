@@ -3,7 +3,7 @@
 from .core import CacheManager, YouTubeClient, LLMManager
 from .repositories import CacheRepository, YouTubeRepository
 from .services import AnalysisService, TranscriptService, ChatService, ContentService
-from .workflows import VideoAnalysisWorkflow
+from .workflows.video_analysis_workflow import VideoAnalysisWorkflow
 from .utils.logging import get_logger
 
 logger = get_logger("service_factory")

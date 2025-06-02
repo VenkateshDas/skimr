@@ -4,8 +4,9 @@ from typing import Optional, Dict, Any, List, Callable, Tuple
 from ..models import AnalysisResult, VideoData, TaskOutput, TokenUsage
 from ..repositories import CacheRepository
 from ..utils.logging import get_logger
-from ..crew import YouTubeAnalysisCrew
+from ..workflows.crew import YouTubeAnalysisCrew
 from ..core import LLMManager
+from ..core.config import config
 
 logger = get_logger("content_service")
 
@@ -24,8 +25,8 @@ class ContentService:
         youtube_url: str,
         transcript_text: str,
         content_type: str,
-        model_name: str = "gpt-4o-mini",
-        temperature: float = 0.2,
+        model_name: str = None,
+        temperature: float = None,
         progress_callback: Optional[Callable[[int], None]] = None,
         status_callback: Optional[Callable[[str], None]] = None
     ) -> Tuple[Optional[str], Optional[Dict[str, int]]]:
@@ -37,8 +38,8 @@ class ContentService:
             youtube_url: YouTube URL
             transcript_text: Video transcript text
             content_type: Type of content to generate (task name)
-            model_name: LLM model to use
-            temperature: Temperature for generation
+            model_name: LLM model to use (defaults to config)
+            temperature: Temperature for generation (defaults to config)
             progress_callback: Progress callback function
             status_callback: Status callback function
             
@@ -46,6 +47,12 @@ class ContentService:
             Tuple of (generated content string, token usage dict) or (None, None) if failed
         """
         try:
+            # Use config defaults if not provided
+            if model_name is None:
+                model_name = config.llm.default_model
+            if temperature is None:
+                temperature = config.llm.default_temperature
+            
             logger.info(f"Generating {content_type} for video {video_id}")
             
             if status_callback:

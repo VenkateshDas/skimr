@@ -1,5 +1,9 @@
 """Workflow orchestration layer."""
 
-from .video_analysis_workflow import VideoAnalysisWorkflow
+# Import crew module for external access
+from .crew import YouTubeAnalysisCrew
 
-__all__ = ["VideoAnalysisWorkflow"]
+# Note: VideoAnalysisWorkflow is not imported here to avoid circular imports
+# Import it directly when needed: from .workflows.video_analysis_workflow import VideoAnalysisWorkflow
+
+__all__ = ["YouTubeAnalysisCrew"]

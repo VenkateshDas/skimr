@@ -11,7 +11,7 @@ import json
 import hashlib
 
 from ..core import CacheManager
-from ..models import VideoData, AnalysisResult, ChatSession
+from ..models import VideoData, AnalysisResult, ChatSession, TokenUsageCache, TokenUsage
 from ..utils.logging import get_logger
 
 logger = get_logger("cache_repository")
@@ -343,31 +343,35 @@ class SmartCacheRepository:
 
 
 class CacheRepository:
-    """Main cache repository using SmartCacheRepository."""
+    """Repository for caching video analysis data with comprehensive token usage tracking."""
     
     def __init__(self, cache_manager: CacheManager):
         self.smart_cache = SmartCacheRepository(cache_manager)
+        self.cache_manager = cache_manager
         logger.info("Initialized CacheRepository")
     
     async def get_video_data(self, video_id: str) -> Optional[VideoData]:
         """Get cached video data."""
         async def fetch_fresh():
-            return None  # Will be handled by service layer
+            return None  # Will be fetched by service if needed
         
-        data = await self.smart_cache.get_with_fallback(
-            "video_data", video_id, fetch_fresh, ttl_hours=24
-        )
-        
-        # Defensive: Only try to parse if the structure is correct
-        # Don't require transcript to be present since it might be None for some videos
-        if data and isinstance(data, dict) and "video_id" in data:
-            try:
-                return VideoData.from_dict(data)
-            except Exception as e:
-                logger.error(f"Failed to parse VideoData from cache for {video_id}: {e}")
-                return None
-        else:
-            logger.warning(f"Cached video data for {video_id} is missing required fields or is not a dict: {data}")
+        try:
+            cached_data = await self.smart_cache.get_with_fallback(
+                "video_data", 
+                video_id, 
+                fetch_fresh,
+                ttl_hours=168  # 1 week
+            )
+            
+            if cached_data and isinstance(cached_data, dict):
+                return VideoData.from_dict(cached_data)
+            elif cached_data and hasattr(cached_data, 'video_id'):
+                # Already a VideoData object
+                return cached_data
+                
+            return None
+        except Exception as e:
+            logger.error(f"Error getting video data for {video_id}: {str(e)}")
             return None
     
     async def store_video_data(self, video_data: VideoData) -> None:
@@ -713,3 +717,128 @@ class CacheRepository:
             
         except Exception as e:
             logger.error(f"Error clearing chat session for video {video_id}: {str(e)}")
+
+    # Token Usage Caching Methods
+    async def get_token_usage_cache(self, video_id: str) -> Optional[TokenUsageCache]:
+        """
+        Get cached token usage data for a video.
+        
+        Args:
+            video_id: Video ID
+            
+        Returns:
+            TokenUsageCache object or None if not found
+        """
+        try:
+            cached_data = await self.smart_cache.get_with_fallback(
+                "token_usage",
+                video_id,
+                lambda: None,  # No fallback for token usage
+                ttl_hours=168  # 1 week
+            )
+            
+            if cached_data and isinstance(cached_data, dict):
+                return TokenUsageCache.from_dict(cached_data)
+            elif cached_data and hasattr(cached_data, 'video_id'):
+                # Already a TokenUsageCache object
+                return cached_data
+                
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting token usage cache for {video_id}: {str(e)}")
+            return None
+    
+    async def store_token_usage_cache(self, token_usage_cache: TokenUsageCache) -> None:
+        """
+        Store token usage cache for a video.
+        
+        Args:
+            token_usage_cache: TokenUsageCache object to store
+        """
+        try:
+            await self.smart_cache.set_with_ttl(
+                "token_usage",
+                token_usage_cache.video_id,
+                token_usage_cache.to_dict(),
+                ttl_hours=168  # 1 week
+            )
+            logger.info(f"Stored token usage cache for video {token_usage_cache.video_id}")
+            
+        except Exception as e:
+            logger.error(f"Error storing token usage cache: {str(e)}")
+    
+    async def update_token_usage_cache(
+        self, 
+        video_id: str, 
+        operation_type: str, 
+        token_usage: TokenUsage,
+        operation_name: Optional[str] = None
+    ) -> None:
+        """
+        Update token usage cache for a specific operation.
+        
+        Args:
+            video_id: Video ID
+            operation_type: Type of operation ('initial_analysis', 'additional_content', 'chat')
+            token_usage: TokenUsage object
+            operation_name: Name of the specific operation (for additional_content)
+        """
+        try:
+            # Get existing cache or create new one
+            token_cache = await self.get_token_usage_cache(video_id)
+            if token_cache is None:
+                token_cache = TokenUsageCache(video_id=video_id)
+            
+            # Update based on operation type
+            if operation_type == "initial_analysis":
+                token_cache.add_initial_analysis(token_usage)
+                logger.info(f"Added initial analysis token usage for {video_id}: {token_usage.to_dict()}")
+                
+            elif operation_type == "additional_content" and operation_name:
+                token_cache.add_additional_content(operation_name, token_usage)
+                logger.info(f"Added {operation_name} token usage for {video_id}: {token_usage.to_dict()}")
+                
+            elif operation_type == "chat":
+                token_cache.add_chat_usage(token_usage)
+                logger.info(f"Added chat token usage for {video_id}: {token_usage.to_dict()}")
+            
+            # Store updated cache
+            await self.store_token_usage_cache(token_cache)
+            
+        except Exception as e:
+            logger.error(f"Error updating token usage cache for {video_id}: {str(e)}")
+    
+    async def clear_token_usage_cache(self, video_id: str) -> None:
+        """
+        Clear token usage cache for a video.
+        
+        Args:
+            video_id: Video ID
+        """
+        try:
+            self.cache_manager.delete("token_usage", video_id)
+            logger.info(f"Cleared token usage cache for video {video_id}")
+            
+        except Exception as e:
+            logger.error(f"Error clearing token usage cache for {video_id}: {str(e)}")
+    
+    async def get_token_usage_for_session_manager(self, video_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get token usage data in the format expected by StreamlitSessionManager.
+        
+        Args:
+            video_id: Video ID
+            
+        Returns:
+            Dictionary with 'cumulative_usage' and 'breakdown' keys, or None if not found
+        """
+        try:
+            token_cache = await self.get_token_usage_cache(video_id)
+            if token_cache:
+                return token_cache.to_session_manager_format()
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting token usage for session manager: {str(e)}")
+            return None

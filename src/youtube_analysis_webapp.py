@@ -3,12 +3,16 @@ Streamlined YouTube Analysis WebApp
 Leveraging Phase 2 Architecture with Full Feature Parity.
 """
 import streamlit as st
+
+# Import config first to get page configuration
+from youtube_analysis.core.config import config, get_model_cost, is_model_available
+
 # Ensure page config is the first Streamlit command
 st.set_page_config(
-    page_title="Skimr Summarizer",
-    page_icon=":material/movie:",
-    layout="wide",
-    initial_sidebar_state="expanded",
+    page_title=config.ui.page_title,
+    page_icon=config.ui.page_icon,
+    layout=config.ui.layout,
+    initial_sidebar_state=config.ui.sidebar_state,
 )
 
 import os
@@ -17,23 +21,23 @@ import logging
 import asyncio
 from typing import List, Dict, Any, Optional, Tuple
 
-# Add src to path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '.')))
+# Add project root to path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # --- Core Application Imports ---
-from src.youtube_analysis.config import APP_VERSION, validate_config, setup_logging
-from src.youtube_analysis.utils.logging import get_logger
-from src.youtube_analysis.ui import (
+from youtube_analysis.core.config import APP_VERSION, validate_config, setup_logging, CHAT_WELCOME_TEMPLATE
+from youtube_analysis.utils.logging import get_logger
+from youtube_analysis.ui import (
     StreamlitCallbacks, StreamlitSessionManager,
     display_analysis_results, display_chat_interface,
     load_css, get_skimr_logo_base64
 )
-from src.youtube_analysis.adapters.webapp_adapter import WebAppAdapter
-from src.youtube_analysis.auth import (
+from youtube_analysis.adapters.webapp_adapter import WebAppAdapter
+from youtube_analysis.services.auth_service import (
     init_auth_state, display_auth_ui, get_current_user,
     logout, check_guest_usage
 )
-from src.youtube_analysis.stats import get_user_stats, increment_summary_count
+from youtube_analysis.services.user_stats_service import get_user_stats, increment_summary_count
 
 # Load environment variables
 from dotenv import load_dotenv
@@ -92,7 +96,6 @@ class StreamlitWebApp:
             self._display_sidebar_auth_status()
             self._display_sidebar_settings()
             self._display_sidebar_analysis_controls()
-            self._display_sidebar_phase2_info()
             self._display_sidebar_version()
 
     def _display_sidebar_logo(self):
@@ -125,9 +128,8 @@ class StreamlitWebApp:
                 st.info("You are not logged in.")
                 
                 # Show guest analysis information
-                from src.youtube_analysis.config import MAX_GUEST_ANALYSES
                 guest_count = self.session_manager.get_state("guest_analysis_count", 0)
-                remaining = max(0, MAX_GUEST_ANALYSES - guest_count)
+                remaining = max(0, config.auth.max_guest_analyses - guest_count)
                 
                 if remaining > 0:
                     st.success(f"🎁 {remaining} free analysis remaining")
@@ -141,36 +143,53 @@ class StreamlitWebApp:
     def _display_sidebar_settings(self):
         with st.expander("⚙️ Settings", expanded=False):
             settings = self.session_manager.get_settings()
+            
+            # Get available models from config and ensure current model is included
+            available_models = config.llm.available_models.copy()
+            current_model = settings.get("model", config.llm.default_model)
+            
+            # Add current model to options if it's not already there (for backward compatibility)
+            if current_model not in available_models:
+                available_models.insert(0, current_model)
+            
+            # Find the index of current model, fallback to 0 if not found
+            try:
+                model_index = available_models.index(current_model)
+            except ValueError:
+                model_index = 0
+                current_model = available_models[0] if available_models else config.llm.default_model
+            
             model = st.selectbox(
                 "AI Model",
-                options=["gpt-4o-mini", "gemini-2.0-flash", "gemini-2.0-flash-lite"],
-                index=["gpt-4o-mini", "gemini-2.0-flash", "gemini-2.0-flash-lite"].index(settings.get("model", "gpt-4o-mini")),
+                options=available_models,
+                index=model_index,
                 key="model_select"
             )
+            
             temperature = st.slider(
                 "Creativity Level (Temperature)",
-                min_value=0.0, max_value=1.0, value=settings.get("temperature", 0.2), step=0.1,
+                min_value=config.ui.temperature_min, 
+                max_value=config.ui.temperature_max, 
+                value=settings.get("temperature", config.llm.default_temperature), 
+                step=config.ui.temperature_step,
                 key="temp_slider"
             )
+            
             use_cache = st.checkbox(
-                "Use Cache (Faster Analysis)", value=settings.get("use_cache", True),
+                "Use Cache (Faster Analysis)", 
+                value=settings.get("use_cache", config.ui.default_use_cache),
                 key="cache_checkbox"
-            )
-            use_optimized_arch = st.checkbox(
-                "Use Phase 2 Optimized Architecture", value=settings.get("use_optimized", True),
-                key="optimized_arch_checkbox",
-                help="Enables advanced caching, connection pooling, and concurrent processing."
             )
 
             updated_settings = {
-                "model": model, "temperature": temperature, "use_cache": use_cache,
-                "use_optimized": use_optimized_arch,
-                "analysis_types": ["Summary & Classification"]
+                "model": model, 
+                "temperature": temperature, 
+                "use_cache": use_cache,
+                "analysis_types": config.ui.default_analysis_types.copy()
             }
             self.session_manager.update_settings(updated_settings)
             os.environ["LLM_MODEL"] = model
             os.environ["LLM_TEMPERATURE"] = str(temperature)
-            os.environ["USE_OPTIMIZED_ANALYSIS"] = "true" if use_optimized_arch else "false"
 
     def _display_sidebar_analysis_controls(self):
         if self.session_manager.is_analysis_complete():
@@ -188,29 +207,7 @@ class StreamlitWebApp:
                 if st.button("🧹 Clear Cache", key="clear_cache", use_container_width=True):
                     self._handle_clear_cache_button()
 
-    def _display_sidebar_phase2_info(self):
-        if self.session_manager.get_settings().get("use_optimized", True):
-            with st.sidebar.expander("⚡ Architecture Info", expanded=False):
-                st.markdown("""
-                **Active Optimizations:**
-                - Service Layer Design
-                - Smart Caching (TTL, Memory Limits)
-                - HTTP Connection Pooling
-                - Concurrent Data Fetching
-                - Background Task Management
-                """)
-                
-                # Add system status check
-                try:
-                    # Quick health check
-                    config_valid, missing_vars = validate_config()
-                    if config_valid:
-                        st.success("🟢 System Status: Healthy")
-                    else:
-                        st.warning(f"🟡 System Status: Configuration incomplete ({len(missing_vars)} missing vars)")
-                except Exception as e:
-                    st.error("🔴 System Status: Issues detected")
-                    logger.warning(f"System status check failed: {e}")
+
 
     def _display_sidebar_version(self):
         st.sidebar.markdown(f"<div style='text-align: center; margin-top: 2rem; opacity: 0.7;'>Skimr v{APP_VERSION}</div>",
@@ -268,9 +265,8 @@ class StreamlitWebApp:
                 
             # Show guest analysis status if not authenticated
             if not self.session_manager.get_state("authenticated"):
-                from src.youtube_analysis.config import MAX_GUEST_ANALYSES
                 guest_count = self.session_manager.get_state("guest_analysis_count", 0)
-                remaining = max(0, MAX_GUEST_ANALYSES - guest_count)
+                remaining = max(0, config.auth.max_guest_analyses - guest_count)
                 
                 if remaining == 0:
                     st.warning("🚫 You've used your free analysis. Please log in to continue analyzing videos.")
@@ -455,30 +451,45 @@ class StreamlitWebApp:
                 st.markdown("---")
                 st.markdown("### 📈 Usage Summary")
                 
-                # Calculate cost estimation (rough estimate)
+                # Calculate cost estimation using dynamic cost service
                 total_tokens = cumulative_usage.get('total_tokens', 0)
+                prompt_tokens = cumulative_usage.get('prompt_tokens', 0)
+                completion_tokens = cumulative_usage.get('completion_tokens', 0)
+                current_model = self.session_manager.get_settings().get("model", config.llm.default_model)
                 
-                # Rough cost estimates for popular models (per 1K tokens)
-                cost_estimates = {
-                    "gpt-4o-mini": 0.00015,  # $0.15 per 1M tokens
-                    "gemini-2.0-flash": 0.0001,  # Estimated cost
-                    "gemini-2.0-flash-lite": 0.00005,  # Estimated cost
-                }
+                # Try to use dynamic cost calculation
+                estimated_cost = 0.0
+                cost_source = "static"
                 
-                current_model = self.session_manager.get_settings().get("model", "gpt-4o-mini")
-                cost_per_1k = cost_estimates.get(current_model, 0.0001)
-                estimated_cost = (total_tokens / 1000) * cost_per_1k
+                try:
+                    from youtube_analysis.services.cost_service import calculate_cost_for_tokens
+                    if config.api.enable_dynamic_costs and config.api.glama_api_key:
+                        estimated_cost = calculate_cost_for_tokens(current_model, prompt_tokens, completion_tokens)
+                        cost_source = "dynamic (Glama.ai)"
+                    else:
+                        # Fall back to static calculation
+                        cost_per_1k = get_model_cost(current_model)
+                        estimated_cost = (total_tokens / 1000) * cost_per_1k
+                        cost_source = "static"
+                except Exception as e:
+                    logger.warning(f"Could not calculate dynamic costs: {e}")
+                    # Fall back to static calculation
+                    cost_per_1k = get_model_cost(current_model)
+                    estimated_cost = (total_tokens / 1000) * cost_per_1k
+                    cost_source = "static (fallback)"
                 
-                col1, col2 = st.columns(2)
+                col1, col2, col3 = st.columns(3)
                 with col1:
                     st.info(f"**Model:** {current_model}")
                 with col2:
-                    st.info(f"**Estimated Cost:** ${estimated_cost:.4f}")
+                    st.info(f"**Estimated Cost:** ${estimated_cost:.6f}")
+                with col3:
+                    st.info(f"**Cost Source:** {cost_source}")
 
         # Display performance stats if available
         perf_stats = analysis_results.get("performance_stats")
-        if perf_stats and self.session_manager.get_settings().get("use_optimized", True):
-            from src.youtube_analysis.ui.components import display_performance_stats
+        if perf_stats:
+            from youtube_analysis.ui.components import display_performance_stats
             display_performance_stats(perf_stats)
 
     # --- Event Handlers ---
@@ -499,10 +510,9 @@ class StreamlitWebApp:
 
         with st.spinner("🧙‍♂️ Skimr is working its magic... Fetching transcript and analyzing..."):
             try:
-                results, error = asyncio.run(
-                    self.webapp_adapter.analyze_video(youtube_url, self.session_manager.get_settings())
-                )
-
+                # Run the async analysis
+                results, error = asyncio.run(self._run_analysis_async(youtube_url))
+                
                 if error:
                     # Show more specific error message based on error type
                     if "Invalid YouTube URL" in error:
@@ -536,52 +546,7 @@ class StreamlitWebApp:
                         - There might be temporary service issues
                         """)
                 elif results:
-                    logger.info(f"Analysis successful for {youtube_url}.")
-                    self.session_manager.set_analysis_results(results)
-                    self.session_manager.set_state("analysis_complete", True)
-                    self.session_manager.set_video_id(results.get("video_id"))
-
-                    # Handle chat setup from results with caching
-                    if results.get("chat_details") and results["chat_details"].get("agent"):
-                        video_title = results.get("video_info", {}).get("title", "this video")
-                        video_id = results.get("video_id")  # Extract video_id from results
-                        
-                        # Use the new cached chat initialization
-                        chat_initialized = self.session_manager.initialize_chat_with_cache(
-                            self.webapp_adapter, 
-                            video_id, 
-                            youtube_url, 
-                            video_title, 
-                            results["chat_details"]
-                        )
-                        
-                        if not chat_initialized:
-                            logger.warning("Failed to initialize chat with cache, falling back to manual setup")
-                            self.session_manager.set_chat_details(results["chat_details"])
-                            self.session_manager.set_state("chat_enabled", True)
-                            
-                            # Initialize welcome message only if chat_messages is empty
-                            current_messages = self.session_manager.get_chat_messages()
-                            if not current_messages:
-                                welcome = f"Hello! I'm your AI assistant for the video \"{video_title}\". Ask me any questions about the content, and I'll do my best to answer based on the transcript. I'll include timestamps in my answers to help you locate information in the video."
-                                self.session_manager.initialize_chat_messages([{"role": "assistant", "content": welcome}])
-                    else:
-                        logger.warning("Chat details not found in analysis results.")
-                        self.session_manager.set_state("chat_enabled", False)
-
-                    # Increment summary count if not cached
-                    if not results.get("cached", False):
-                        if self.session_manager.get_state("authenticated"):
-                            # Increment summary count for authenticated users
-                            user = get_current_user()
-                            if user and hasattr(user, 'id'):
-                               increment_summary_count(user.id)
-                               logger.info(f"Incremented summary count for user {user.id}")
-                        else:
-                            # Increment guest analysis count for guest users
-                            current_guest_count = self.session_manager.get_state("guest_analysis_count", 0)
-                            self.session_manager.set_state("guest_analysis_count", current_guest_count + 1)
-                            logger.info(f"Incremented guest analysis count to {current_guest_count + 1}")
+                    asyncio.run(self._handle_successful_analysis(results, youtube_url))
                 else:
                     st.error("Analysis completed but returned no results.")
                     logger.error(f"No results from analysis for {youtube_url}")
@@ -592,6 +557,86 @@ class StreamlitWebApp:
                 st.error(f"An unexpected error occurred: {str(e)}")
                 self.session_manager.set_state("analysis_complete", False)
         st.rerun()
+    
+    async def _run_analysis_async(self, youtube_url: str):
+        """Run the analysis asynchronously."""
+        return await self.webapp_adapter.analyze_video(youtube_url, self.session_manager.get_settings())
+    
+    async def _handle_successful_analysis(self, results, youtube_url: str):
+        """Handle successful analysis results asynchronously."""
+        logger.info(f"Analysis successful.")
+        video_id = results.get("video_id")
+        self.session_manager.set_video_id(video_id)
+        
+        # Store webapp_adapter reference first for cache operations
+        self.session_manager.set_state("webapp_adapter", self.webapp_adapter)
+        
+        # CRITICAL: Initialize token usage with cache BEFORE setting analysis results
+        # This ensures cached token usage is not overwritten by initial analysis
+        if video_id:
+            try:
+                token_loaded_from_cache = await self.session_manager.initialize_token_usage_with_cache_async(
+                    self.webapp_adapter, video_id
+                )
+                if token_loaded_from_cache:
+                    logger.info(f"Restored token usage from cache for video {video_id}")
+                    # Store analysis results WITHOUT overwriting token usage
+                    self.session_manager.store_analysis_results_without_token_override(results)
+                else:
+                    logger.info(f"No cached token usage found for video {video_id}, using fresh tracking")
+                    # Normal store which will add initial analysis token usage
+                    self.session_manager.set_analysis_results(results)
+            except Exception as e:
+                logger.warning(f"Failed to initialize token usage cache: {e}")
+                # Fallback to normal store
+                self.session_manager.set_analysis_results(results)
+        else:
+            # No video ID, normal store
+            self.session_manager.set_analysis_results(results)
+        
+        self.session_manager.set_state("analysis_complete", True)
+
+        # Handle chat setup from results with caching
+        if results.get("chat_details") and results["chat_details"].get("agent"):
+            video_title = results.get("video_info", {}).get("title", "this video")
+            video_id = results.get("video_id")  # Extract video_id from results
+            
+            # Use the async cached chat initialization (we're in async context here)
+            chat_initialized = await self.session_manager.initialize_chat_with_cache_async(
+                self.webapp_adapter, 
+                video_id, 
+                youtube_url, 
+                video_title, 
+                results["chat_details"]
+            )
+            
+            if not chat_initialized:
+                logger.warning("Failed to initialize chat with cache, falling back to manual setup")
+                self.session_manager.set_chat_details(results["chat_details"])
+                self.session_manager.set_state("chat_enabled", True)
+                
+                # Initialize welcome message only if chat_messages is empty
+                current_messages = self.session_manager.get_chat_messages()
+                if not current_messages:
+                    welcome = CHAT_WELCOME_TEMPLATE.format(video_title=video_title)
+                    self.session_manager.initialize_chat_messages([{"role": "assistant", "content": welcome}])
+        else:
+            logger.warning("Chat details not found in analysis results.")
+            self.session_manager.set_state("chat_enabled", False)
+
+        # Increment summary count if not cached
+        if not results.get("cached", False):
+            if self.session_manager.get_state("authenticated"):
+                # Increment summary count for authenticated users
+                user = get_current_user()
+                if user and hasattr(user, 'id'):
+                   increment_summary_count(user.id)
+                   logger.info(f"Incremented summary count for user {user.id}")
+            else:
+                # Increment guest analysis count for guest users
+                current_guest_count = self.session_manager.get_state("guest_analysis_count", 0)
+                self.session_manager.set_state("guest_analysis_count", current_guest_count + 1)
+                logger.info(f"Incremented guest analysis count to {current_guest_count + 1}")
 
     def _handle_generate_additional_content(self, content_type_key: str):
         logger.info(f"Generating additional content: {content_type_key}")
@@ -681,6 +726,23 @@ class StreamlitWebApp:
                     if token_usage and isinstance(token_usage, dict):
                         self.session_manager.add_token_usage("additional_content", token_usage, task_key)
                         logger.info(f"Tracked token usage for {content_type_key}: {token_usage}")
+                        
+                        # Explicitly save additional content token usage to cache
+                        if video_id:
+                            try:
+                                # Save additional content token usage to cache via webapp adapter
+                                success = asyncio.run(self.webapp_adapter.save_token_usage_to_cache(
+                                    video_id, 
+                                    "additional_content", 
+                                    token_usage,
+                                    task_key
+                                ))
+                                if success:
+                                    logger.debug(f"Saved additional content token usage to cache for video {video_id}")
+                                else:
+                                    logger.warning(f"Failed to save additional content token usage to cache for video {video_id}")
+                            except Exception as e:
+                                logger.warning(f"Error saving additional content token usage to cache: {e}")
                     
                     self.session_manager.set_state("content_generation_pending", True)
                     self.session_manager.set_state("content_type_generated", content_type_key)
@@ -775,6 +837,23 @@ class StreamlitWebApp:
             if chat_token_usage and isinstance(chat_token_usage, dict):
                 self.session_manager.add_token_usage("chat", chat_token_usage)
                 logger.info(f"Tracked chat token usage: {chat_token_usage}")
+                
+                # Explicitly save chat token usage to cache
+                video_id = self.session_manager.get_video_id()
+                if video_id:
+                    try:
+                        # Save chat token usage to cache via webapp adapter
+                        success = asyncio.run(self.webapp_adapter.save_token_usage_to_cache(
+                            video_id, 
+                            "chat", 
+                            chat_token_usage
+                        ))
+                        if success:
+                            logger.debug(f"Saved chat token usage to cache for video {video_id}")
+                        else:
+                            logger.warning(f"Failed to save chat token usage to cache for video {video_id}")
+                    except Exception as e:
+                        logger.warning(f"Error saving chat token usage to cache: {e}")
             
             self.session_manager.set_state("is_chat_streaming", False)
             self.session_manager.set_state("current_chat_question", None)
@@ -811,7 +890,7 @@ class StreamlitWebApp:
                 
                 if not chat_initialized:
                     # Fallback to manual welcome message
-                    welcome = f"Hello! I'm your AI assistant for the video \"{video_title}\". Ask me any questions about the content, and I'll do my best to answer based on the transcript. I'll include timestamps in my answers to help you locate information in the video."
+                    welcome = CHAT_WELCOME_TEMPLATE.format(video_title=video_title)
                     self.session_manager.initialize_chat_messages([{"role": "assistant", "content": welcome}])
         st.rerun()
 
@@ -826,9 +905,9 @@ class StreamlitWebApp:
         video_id = self.session_manager.get_video_id()
         logger.info(f"Clear cache button clicked for video_id: {video_id}")
         if video_id:
-            # Clear all cache including chat sessions
+            # Clear all cache including chat sessions and token usage
             self.webapp_adapter.clear_cache_for_video(video_id)
-            st.success(f"Cache (including chat history) cleared for video {video_id}.")
+            st.success(f"Cache (including chat history and token usage) cleared for video {video_id}.")
             self.session_manager.reset_for_new_analysis()
             self.session_manager.set_state("current_youtube_url", "")
             st.rerun()
@@ -856,4 +935,4 @@ def main():
     app.run()
 
 if __name__ == "__main__":
-    main()
+    main() 

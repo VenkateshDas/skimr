@@ -63,4 +63,5 @@ db/
 PRD.md
 
 .claude
-.devcontainer
+.devcontainer/
+.pytest_cache/

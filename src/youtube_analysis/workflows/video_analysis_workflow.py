@@ -4,6 +4,7 @@ from typing import List, Optional, Dict, Any, Callable, Tuple
 from ..models import AnalysisResult, VideoData
 from ..services import AnalysisService, TranscriptService, ChatService, ContentService
 from ..utils.logging import get_logger
+from ..core.config import config
 
 logger = get_logger("video_analysis_workflow")
 
@@ -39,8 +40,8 @@ class VideoAnalysisWorkflow:
         use_cache: bool = True,
         progress_callback: Optional[Callable[[int], None]] = None,
         status_callback: Optional[Callable[[str], None]] = None,
-        model_name: str = "gpt-4o-mini",
-        temperature: float = 0.2
+        model_name: str = None,
+        temperature: float = None
     ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         """
         Complete video analysis workflow including chat setup.
@@ -49,6 +50,14 @@ class VideoAnalysisWorkflow:
             Tuple of (complete_results, error_message)
         """
         try:
+            # Use config defaults if not provided
+            if model_name is None:
+                model_name = config.llm.default_model
+            if temperature is None:
+                temperature = config.llm.default_temperature
+            if analysis_types is None:
+                analysis_types = config.analysis.available_analysis_types.copy()
+            
             # Step 1: Run analysis
             if status_callback:
                 status_callback("Starting video analysis...")

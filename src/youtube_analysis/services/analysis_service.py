@@ -6,9 +6,10 @@ from datetime import datetime
 
 from ..models import VideoData, AnalysisResult, AnalysisStatus, ContentCategory, ContextTag, TaskOutput, TokenUsage
 from ..repositories import CacheRepository, YouTubeRepository
-from ..crew import YouTubeAnalysisCrew
+from ..workflows.crew import YouTubeAnalysisCrew
 from ..core import LLMManager
 from ..utils.logging import get_logger
+from ..core.config import config
 
 logger = get_logger("analysis_service")
 
@@ -42,8 +43,8 @@ class AnalysisService:
         use_cache: bool = True,
         progress_callback: Optional[Callable[[int], None]] = None,
         status_callback: Optional[Callable[[str], None]] = None,
-        model_name: str = "gpt-4o-mini",
-        temperature: float = 0.2
+        model_name: str = None,
+        temperature: float = None
     ) -> Tuple[Optional[AnalysisResult], Optional[str]]:
         """
         Analyze a YouTube video with comprehensive error handling.
@@ -54,17 +55,23 @@ class AnalysisService:
             use_cache: Whether to use cached results
             progress_callback: Progress update callback
             status_callback: Status update callback
-            model_name: LLM model to use
-            temperature: LLM temperature setting
+            model_name: LLM model to use (defaults to config)
+            temperature: LLM temperature setting (defaults to config)
             
         Returns:
             Tuple of (AnalysisResult, error_message)
         """
         start_time = datetime.now()
         
-        # Default analysis types
+        # Use config defaults if not provided
+        if model_name is None:
+            model_name = config.llm.default_model
+        if temperature is None:
+            temperature = config.llm.default_temperature
+        
+        # Default analysis types from config
         if analysis_types is None:
-            analysis_types = ["Summary & Classification", "Action Plan", "Blog Post", "LinkedIn Post", "X Tweet"]
+            analysis_types = config.analysis.available_analysis_types.copy()
         
         try:
             # Extract video ID
@@ -80,7 +87,7 @@ class AnalysisService:
                 status_callback("Checking cache...")
             
             # Check cache first
-            if use_cache:
+            if use_cache and config.cache.enable_cache:
                 try:
                     cached_result = await self.cache_repo.get_analysis_result(video_id)
                     if cached_result and cached_result.is_successful:
@@ -152,11 +159,12 @@ class AnalysisService:
                 status_callback("Caching results...")
             
             # Cache the results
-            try:
-                await self.cache_repo.store_analysis_result(analysis_result)
-            except Exception as cache_error:
-                logger.warning(f"Error storing analysis in cache: {str(cache_error)}")
-                # Continue without failing the whole operation
+            if use_cache and config.cache.enable_cache:
+                try:
+                    await self.cache_repo.store_analysis_result(analysis_result)
+                except Exception as cache_error:
+                    logger.warning(f"Error storing analysis in cache: {str(cache_error)}")
+                    # Continue without failing the whole operation
             
             if progress_callback:
                 progress_callback(100)

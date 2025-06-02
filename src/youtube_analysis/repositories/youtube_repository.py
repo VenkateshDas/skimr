@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from ..models import VideoData, VideoInfo, TranscriptSegment
 from ..core import YouTubeClient, CacheManager
 from ..utils.logging import get_logger
+from ..core.config import config
 
 logger = get_logger("youtube_repository")
 
@@ -23,14 +24,14 @@ class YouTubeRepository:
     - Concurrent request handling
     """
     
-    def __init__(self, youtube_client: YouTubeClient, max_connections: int = 50):
+    def __init__(self, youtube_client: YouTubeClient, max_connections: int = None):
         self.youtube_client = youtube_client
-        self.max_connections = max_connections
+        self.max_connections = max_connections or config.network.http_keepalive_timeout
         self._session: Optional[aiohttp.ClientSession] = None
         self._rate_limiter = asyncio.Semaphore(10)  # 10 concurrent requests
         self._request_times: List[datetime] = []
         
-        logger.info(f"Initialized YouTubeRepository with max_connections={max_connections}")
+        logger.info(f"Initialized YouTubeRepository with max_connections={self.max_connections}")
     
     async def _get_session(self) -> aiohttp.ClientSession:
         """Get or create HTTP session with connection pooling."""
@@ -40,11 +41,14 @@ class YouTubeRepository:
                 limit_per_host=20,
                 ttl_dns_cache=300,
                 use_dns_cache=True,
-                keepalive_timeout=30,
+                keepalive_timeout=config.network.http_keepalive_timeout,
                 enable_cleanup_closed=True
             )
             
-            timeout = aiohttp.ClientTimeout(total=30, connect=10)
+            timeout = aiohttp.ClientTimeout(
+                total=config.network.http_timeout_total, 
+                connect=config.network.http_timeout_connect
+            )
             
             self._session = aiohttp.ClientSession(
                 connector=connector,

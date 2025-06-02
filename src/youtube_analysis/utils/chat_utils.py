@@ -1,4 +1,4 @@
-"""Chat functionality for YouTube video analysis."""
+"""Chat utility functions for YouTube video analysis."""
 
 import os
 import time
@@ -21,11 +21,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from .utils.logging import get_logger
-from .core import LLMManager, YouTubeClient, CacheManager
+from .logging import get_logger
+from ..core import LLMManager, YouTubeClient, CacheManager
+from ..core.config import CHAT_PROMPT_TEMPLATE
 
 # Configure logging
-logger = get_logger("chat")
+logger = get_logger("chat_utils")
 
 # Initialize core components
 llm_manager = LLMManager()
@@ -159,7 +160,7 @@ def create_agent_graph(vectorstore: FAISS, video_metadata: Dict[str, Any], has_t
     logger.info(f"Creating chat agent with model: {model_name}, temperature: {temperature}")
     
     # Use LLMManager to get the language model
-    from .core.llm_manager import LLMConfig
+    from ..core.llm_manager import LLMConfig
     config = LLMConfig(model=model_name, temperature=temperature)
     llm = llm_manager.get_langchain_llm(config)
 
@@ -220,33 +221,14 @@ def create_agent_graph(vectorstore: FAISS, video_metadata: Dict[str, Any], has_t
     # Create tools list
     tools = [yt_retriever_tool, video_info_tool, search_tool]
     
-    # Create system message with video description
+    # Create system message with video description using template from config
     video_title = video_metadata.get('title', 'Unknown')
     video_description = video_metadata.get('description', 'No description available')
     
-    system_message_content = f"""You are an AI assistant that helps users understand YouTube video content.
-You have access to the transcript of a YouTube video titled "{video_title}" with the following description:
-
-DESCRIPTION:
-{video_description}
-
-You can answer questions about this video and also handle general questions not related to the video.
-
-For questions about the video content, use the YouTube_Video_Search tool to find relevant information in the transcript.
-For questions about the video itself (URL, ID, title, description), use the YouTube_Video_Info tool.
-If the user asks about a concept that is not clearly explained in the video, use the Tavily_Search tool to find relevant information online.
-Also, if the question is not related to the video but if it is a valid question that can be answered by the internet, use the Tavily_Search tool to find relevant information online.
-For general questions not related to the video, use your own knowledge to answer or use the Tavily_Search tool to find relevant information online.
-
-Always be helpful, accurate, and concise in your responses.
-If you don't know the answer to a question about the video, say so rather than making up information.
-If you are searching the internet for information, then use clever search queries to get the most relevant information.
-
-IMPORTANT: When answering questions about the video content, always include the timestamp citations from the transcript in your response. 
-These timestamps indicate when in the video the information was mentioned. Format citations like [MM:SS] in your answers.
-
-IMPORTANT: Use the chat history to maintain context of the conversation. Refer back to previous questions and answers when relevant.
-"""
+    system_message_content = CHAT_PROMPT_TEMPLATE.format(
+        video_title=video_title,
+        video_description=video_description
+    )
     
     logger.info(f"System message: {system_message_content[:200]}...")
     
@@ -322,12 +304,6 @@ def format_timestamped_results(docs):
             results.append(content)
     
     return "\n\n".join(results)
-
-def setup_chat_for_video(youtube_url: str, transcript: str, transcript_list: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
-    """
-    Set up the chat functionality for a YouTube video (sync wrapper).
-    """
-    return asyncio.run(setup_chat_for_video_async(youtube_url, transcript, transcript_list))
 
 async def setup_chat_for_video_async(youtube_url: str, transcript: str, transcript_list: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """

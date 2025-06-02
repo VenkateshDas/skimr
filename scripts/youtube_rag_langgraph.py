@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '.'))
 # Import the YouTube Analysis modules
 from src.youtube_analysis.utils.youtube_utils import get_transcript, extract_video_id, get_video_info
 from src.youtube_analysis.utils.logging import setup_logger
+from src.youtube_analysis.core.config import CHAT_PROMPT_TEMPLATE
 
 # Load environment variables
 load_dotenv()
@@ -126,27 +127,14 @@ def create_agent_graph(vectorstore: FAISS, video_metadata: Dict[str, Any]):
     # Create tools list
     tools = [search_tool, video_info_tool]
     
-    # Create system message with video description
+    # Create system message with video description using template from config
     video_title = video_metadata.get('title', 'Unknown')
     video_description = video_metadata.get('description', 'No description available')
     
-    system_message_content = f"""You are an AI assistant that helps users understand YouTube video content.
-You have access to the transcript of a YouTube video titled "{video_title}" with the following description:
-
-DESCRIPTION:
-{video_description}
-
-You can answer questions about this video and also handle general questions not related to the video.
-
-For questions about the video content, use the YouTube_Video_Search tool to find relevant information in the transcript.
-For questions about the video itself (URL, ID, title, description), use the YouTube_Video_Info tool.
-For general questions not related to the video, use your own knowledge to answer.
-
-Always be helpful, accurate, and concise in your responses.
-If you don't know the answer to a question about the video, say so rather than making up information.
-
-IMPORTANT: Use the chat history to maintain context of the conversation. Refer back to previous questions and answers when relevant.
-"""
+    system_message_content = CHAT_PROMPT_TEMPLATE.format(
+        video_title=video_title,
+        video_description=video_description
+    )
     
     # Create a proper prompt template with the system message
     prompt = ChatPromptTemplate.from_messages([
