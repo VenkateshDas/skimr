@@ -10,6 +10,7 @@ import yt_dlp
 
 from .cache_manager import CacheManager
 from ..utils.logging import get_logger
+from ..transcription import WhisperTranscriber, TranscriptUnavailable, Transcript as TranscriptModel
 
 logger = get_logger("youtube_client")
 
@@ -114,6 +115,25 @@ class YouTubeClient:
             )
             
             if not transcript_list:
+                # Try Whisper transcription as fallback
+                try:
+                    logger.info(f"No transcript available for {video_id}, trying Whisper transcription")
+                    whisper = WhisperTranscriber()
+                    transcript_obj = await whisper.get(video_id=video_id, language='en')
+                    if transcript_obj and transcript_obj.segments:
+                        transcript = transcript_obj.text
+                        logger.info(f"Successfully transcribed {video_id} with Whisper")
+                        
+                        # Cache the result
+                        if use_cache:
+                            self.cache.set("transcripts", cache_key, {"text": transcript})
+                        
+                        return transcript
+                except TranscriptUnavailable as e:
+                    logger.warning(f"Whisper transcription failed: {str(e)}")
+                except Exception as e:
+                    logger.error(f"Unexpected error during Whisper transcription: {str(e)}")
+                
                 return None
             
             transcript = ' '.join([item['text'] for item in transcript_list])
@@ -191,6 +211,46 @@ class YouTubeClient:
             )
             
             if not transcript_list:
+                # Try Whisper transcription as fallback
+                try:
+                    logger.info(f"No transcript available for {video_id}, trying Whisper transcription")
+                    whisper = WhisperTranscriber()
+                    transcript_obj = await whisper.get(video_id=video_id, language='en')
+                    
+                    if transcript_obj and transcript_obj.segments:
+                        # Format with timestamps
+                        formatted_transcript = []
+                        transcript_list = []
+                        
+                        for segment in transcript_obj.segments:
+                            seconds = int(segment.start)
+                            minutes, seconds = divmod(seconds, 60)
+                            timestamp = f"{minutes:02d}:{seconds:02d}"
+                            formatted_transcript.append(f"[{timestamp}] {segment.text}")
+                            
+                            # Add to list format for compatibility
+                            transcript_list.append({
+                                'text': segment.text,
+                                'start': segment.start,
+                                'duration': segment.duration or 0
+                            })
+                        
+                        formatted_text = "\n".join(formatted_transcript)
+                        
+                        # Cache the result
+                        if use_cache:
+                            self.cache.set("transcripts", cache_key, {
+                                "formatted": formatted_text,
+                                "raw": transcript_list
+                            })
+                        
+                        logger.info(f"Successfully transcribed {video_id} with Whisper")
+                        return formatted_text, transcript_list
+                except TranscriptUnavailable as e:
+                    logger.warning(f"Whisper transcription failed: {str(e)}")
+                except Exception as e:
+                    logger.error(f"Unexpected error during Whisper transcription: {str(e)}")
+                
                 return None, None
             
             # Format with timestamps

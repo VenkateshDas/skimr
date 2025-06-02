@@ -842,3 +842,84 @@ class CacheRepository:
         except Exception as e:
             logger.error(f"Error getting token usage for session manager: {str(e)}")
             return None
+
+    async def get_custom_data(self, category: str, key: str) -> Optional[Dict[str, Any]]:
+        """
+        Get custom data from cache by category and key.
+        
+        Args:
+            category: Data category (e.g., 'transcripts', 'whisper')
+            key: Unique identifier for the data
+            
+        Returns:
+            Cached data or None if not found/expired
+        """
+        async def fetch_fresh():
+            return None  # Will be handled by service layer
+            
+        try:
+            cache_key = f"{category}_{key}"
+            data = await self.smart_cache.get_with_fallback(
+                category, cache_key, fetch_fresh, ttl_hours=168  # 1 week
+            )
+            
+            return data
+        except Exception as e:
+            logger.error(f"Error getting custom data for {category}/{key}: {str(e)}")
+            return None
+            
+    async def store_custom_data(self, category: str, key: str, data: Dict[str, Any], ttl_hours: int = 168) -> None:
+        """
+        Store custom data in cache.
+        
+        Args:
+            category: Data category (e.g., 'transcripts', 'whisper')
+            key: Unique identifier for the data
+            data: Data to store
+            ttl_hours: Cache TTL in hours (default: 1 week)
+        """
+        try:
+            # Validate data
+            if not isinstance(data, dict):
+                logger.error(f"Invalid data type for custom data: {type(data)}, expected dict")
+                return
+                
+            # Ensure the dictionary is JSON serializable
+            try:
+                json.dumps(data, default=str)
+            except (TypeError, ValueError) as e:
+                logger.error(f"Data is not JSON serializable: {str(e)}")
+                # Try to clean the dictionary
+                data = self._clean_dict_for_serialization(data)
+                
+            # Store in cache with TTL
+            cache_key = f"{category}_{key}"
+            await self.smart_cache.set_with_ttl(
+                category, cache_key, data, ttl_hours=ttl_hours
+            )
+            logger.info(f"Stored custom data in cache for {category}/{key}")
+        except Exception as e:
+            logger.error(f"Error storing custom data in cache: {str(e)}")
+    
+    async def clear_custom_data(self, category: str, key: str) -> None:
+        """
+        Clear custom data from cache.
+        
+        Args:
+            category: Data category (e.g., 'transcripts', 'whisper')
+            key: Unique identifier for the data
+        """
+        try:
+            cache_key = f"{category}_{key}"
+            
+            # Remove from memory cache in smart repository
+            memory_key = f"{category}:{cache_key}"
+            if hasattr(self.smart_cache, '_memory_cache') and memory_key in self.smart_cache._memory_cache:
+                del self.smart_cache._memory_cache[memory_key]
+                
+            # Remove from persistent cache
+            self.cache_manager.delete(category, cache_key)
+            
+            logger.info(f"Cleared custom data from cache for {category}/{key}")
+        except Exception as e:
+            logger.error(f"Error clearing custom data from cache: {str(e)}")

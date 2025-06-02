@@ -3,6 +3,7 @@
 from typing import Optional, Tuple, List, Dict, Any
 import asyncio
 from ..models import VideoData, TranscriptSegment
+from ..transcription import WhisperTranscriber, TranscriptUnavailable
 from ..repositories import CacheRepository, YouTubeRepository
 from ..utils.logging import get_logger
 
@@ -15,6 +16,7 @@ class TranscriptService:
     def __init__(self, cache_repository: CacheRepository, youtube_repository: YouTubeRepository):
         self.cache_repo = cache_repository
         self.youtube_repo = youtube_repository
+        self.whisper_transcriber = WhisperTranscriber()
         logger.info("Initialized TranscriptService")
     
     async def get_transcript(self, youtube_url: str, use_cache: bool = True) -> Optional[str]:
@@ -141,7 +143,16 @@ class TranscriptService:
                         logger.info(f"Created simple transcript segment from plain text for {video_id}")
                         return [{"text": transcript_text, "start": 0.0, "duration": 0.0}]
                     else:
-                        logger.error(f"Could not retrieve transcript text for {video_id}")
+                        # Try Whisper transcription as final fallback
+                        logger.info(f"Attempting Whisper transcription as final fallback for {video_id}")
+                        whisper_result = asyncio.run(self.get_transcript_with_whisper(youtube_url, use_cache=use_cache))
+                        if whisper_result and len(whisper_result) == 2:
+                            _, segments = whisper_result
+                            if segments:
+                                logger.info(f"Successfully transcribed {video_id} with Whisper")
+                                return segments
+                            
+                        logger.error(f"Could not retrieve transcript for {video_id}")
                         return None
                 except Exception as async_error:
                     logger.error(f"Error in async transcript retrieval fallback: {str(async_error)}")
@@ -210,3 +221,111 @@ class TranscriptService:
             await self.cache_repo.store_video_data(video_data)
         
         return video_data
+    
+    async def get_transcript_with_whisper(
+        self, 
+        youtube_url: str, 
+        language: str = "en", 
+        model_name: str = None,
+        use_cache: bool = True
+    ) -> Optional[Tuple[str, List[Dict[str, Any]]]]:
+        """
+        Get transcript using OpenAI Whisper API directly.
+        
+        Args:
+            youtube_url: YouTube URL
+            language: ISO-639-1 language code
+            model_name: OpenAI Whisper model to use (whisper-1, gpt-4o-transcribe, gpt-4o-mini-transcribe)
+            use_cache: Whether to use cached transcript
+            
+        Returns:
+            Tuple of (transcript text, segment list) or None if error
+        """
+        video_id = self.youtube_repo.extract_video_id(youtube_url)
+        if not video_id:
+            logger.error(f"Invalid YouTube URL: {youtube_url}")
+            return None
+        
+        cache_key = f"whisper_transcript_{video_id}_{language}_{model_name or 'default'}"
+        
+        if use_cache:
+            cached_data = await self.cache_repo.get_custom_data("transcripts", cache_key)
+            if cached_data:
+                logger.info(f"Using cached Whisper transcript for {video_id}")
+                return cached_data.get("text"), cached_data.get("segments")
+        
+        try:
+            logger.info(f"Transcribing {video_id} with Whisper API")
+            transcript_obj = await self.whisper_transcriber.get(
+                video_id=video_id, 
+                language=language,
+                model_name=model_name
+            )
+            
+            if not transcript_obj or not transcript_obj.segments:
+                logger.warning(f"Whisper transcription failed for {video_id}")
+                return None
+            
+            # Convert segments to list of dicts for consistency with existing API
+            segments_list = [
+                {
+                    "text": segment.text,
+                    "start": segment.start,
+                    "duration": segment.duration or 0
+                }
+                for segment in transcript_obj.segments
+            ]
+            
+            transcript_text = transcript_obj.text
+            
+            # Store in cache
+            if use_cache:
+                await self.cache_repo.store_custom_data(
+                    "transcripts", 
+                    cache_key, 
+                    {
+                        "text": transcript_text,
+                        "segments": segments_list
+                    }
+                )
+            
+            logger.info(f"Successfully transcribed {video_id} with Whisper")
+            return transcript_text, segments_list
+            
+        except TranscriptUnavailable as e:
+            logger.warning(f"Whisper transcription unavailable for {video_id}: {str(e)}")
+            return None
+        except Exception as e:
+            logger.error(f"Error in Whisper transcription for {video_id}: {str(e)}")
+            return None
+    
+    def get_transcript_with_whisper_sync(
+        self, 
+        youtube_url: str, 
+        language: str = "en", 
+        model_name: str = None,
+        use_cache: bool = True
+    ) -> Optional[Tuple[str, List[Dict[str, Any]]]]:
+        """
+        Synchronous method to get transcript using Whisper.
+        
+        Args:
+            youtube_url: YouTube URL
+            language: ISO-639-1 language code
+            model_name: OpenAI Whisper model to use
+            use_cache: Whether to use cached transcript
+            
+        Returns:
+            Tuple of (transcript text, segment list) or None if error
+        """
+        try:
+            # Use asyncio.run to execute the async method
+            return asyncio.run(self.get_transcript_with_whisper(
+                youtube_url=youtube_url, 
+                language=language, 
+                model_name=model_name, 
+                use_cache=use_cache
+            ))
+        except Exception as e:
+            logger.error(f"Error in get_transcript_with_whisper_sync: {str(e)}")
+            return None
