@@ -15,6 +15,7 @@ The application follows **Clean Architecture** principles with clear separation 
 - **UI**: User interface components and session management
 - **Workflows**: Complex business processes orchestration
 - **Utils**: Shared utilities and helper functions
+- **Transcription**: Audio transcription system with Whisper integration
 
 ## Directory Structure
 
@@ -71,7 +72,7 @@ The core application package organized in clean architecture layers.
 - **`analysis_service.py`** - Core video analysis orchestration
 - **`auth_service.py`** - User authentication and authorization
 - **`chat_service.py`** - Interactive chat with video content
-- **`content_service.py`** - Content management and retrieval
+- **`content_service.py`** - Content management and retrieval with custom instruction support
 - **`cost_service.py`** - Dynamic LLM cost calculation using Glama.ai API
 - **`transcript_service.py`** - Transcript processing and management
 - **`user_stats_service.py`** - User analytics and statistics
@@ -82,19 +83,37 @@ The core application package organized in clean architecture layers.
 - ✅ Adding authentication providers
 - ✅ Modifying chat behavior
 - ✅ Adding content filters
+- ✅ Enhancing custom instruction processing
+
+#### 🎤 **Transcription System** (`transcription/`)
+
+**Purpose**: Handles audio extraction and transcription from YouTube videos.
+
+- **`base.py`** - Base transcriber interface
+- **`factory.py`** - Transcription factory pattern implementation
+- **`models.py`** - Transcript data models
+- **`whisper.py`** - OpenAI Whisper API implementation with multiple model support
+
+**When to modify**:
+- ✅ Adding new transcription providers
+- ✅ Supporting additional Whisper models
+- ✅ Improving audio extraction
+- ✅ Enhancing transcript segmentation
+- ✅ Optimizing transcription performance
 
 #### 🔄 **Workflows** (`workflows/`)
 
 **Purpose**: Orchestrates complex multi-step business processes.
 
 - **`crew.py`** - CrewAI agent configuration and setup
-- **`video_analysis_workflow.py`** - End-to-end video analysis process
+- **`video_analysis_workflow.py`** - End-to-end video analysis process with custom instruction handling
 
 **When to modify**:
 - ✅ Adding new AI agents
 - ✅ Modifying analysis steps
 - ✅ Changing workflow orchestration
 - ✅ Adding parallel processing
+- ✅ Enhancing custom instruction flow
 
 #### 🎨 **User Interface** (`ui/`)
 
@@ -110,6 +129,7 @@ The core application package organized in clean architecture layers.
 - ✅ Modifying styling and themes
 - ✅ Changing user interaction flows
 - ✅ Adding new progress indicators
+- ✅ Enhancing custom instruction input UI
 
 #### 🔧 **Utilities** (`utils/`)
 
@@ -155,13 +175,14 @@ The core application package organized in clean architecture layers.
 **Purpose**: YAML configuration files for AI agents and tasks.
 
 - **`agents.yaml`** - AI agent definitions and roles
-- **`tasks.yaml`** - Task specifications for analysis workflows
+- **`tasks.yaml`** - Task specifications for analysis workflows with custom instruction placeholders
 
 **When to modify**:
 - ✅ Adding new AI agents
 - ✅ Modifying agent behaviors
 - ✅ Creating new analysis tasks
 - ✅ Adjusting agent prompts
+- ✅ Enhancing custom instruction templates
 
 #### 🖼️ **Assets** (`logo/`)
 
@@ -208,6 +229,7 @@ The core application package organized in clean architecture layers.
 - ✅ Modifying app layout
 - ✅ Changing navigation structure
 - ✅ Adding global UI components
+- ✅ Enhancing custom instruction UI
 
 ## Development Guidelines
 
@@ -219,6 +241,19 @@ The core application package organized in clean architecture layers.
 3. **Workflows** → Update `crew.py` or workflow logic
 4. **Services** → Modify `analysis_service.py` for new logic
 5. **UI** → Update components to display new analysis type
+
+#### Adding Custom Instructions for Content Generation
+1. **Config** → Add custom instruction placeholder in `tasks.yaml`
+2. **UI** → Create input component in `components.py`
+3. **Services** → Update `content_service.py` to process instructions
+4. **Workflows** → Modify task execution in `crew.py`
+5. **Models** → Update result model if needed
+
+#### Enhancing Whisper Transcription
+1. **Transcription** → Update model options in `whisper.py`
+2. **Config** → Add new model configuration in `config.py`
+3. **Services** → Update `transcript_service.py` to support new models
+4. **UI** → Add transcription model selection if needed
 
 #### Adding a New UI Component
 1. **UI** → Create component in `components.py`
@@ -243,6 +278,7 @@ The core application package organized in clean architecture layers.
 2. **Utils** → Optimize functions in `utils/`
 3. **Repositories** → Add query optimization
 4. **Services** → Implement async patterns
+5. **Transcription** → Optimize audio processing in `whisper.py`
 
 ### 🔍 **Debugging Guidelines**
 
@@ -251,6 +287,17 @@ The core application package organized in clean architecture layers.
 - **Check**: `workflows/` for step-by-step execution
 - **Check**: `repositories/youtube_repository.py` for data fetching
 - **Logs**: Enable debug logging in `utils/logging.py`
+
+#### Transcription Issues
+- **Check**: `transcription/whisper.py` for API integration
+- **Check**: `transcription/factory.py` for provider selection
+- **Check**: FFmpeg installation and configuration
+- **Check**: OpenAI API key and permissions
+
+#### Custom Instruction Issues
+- **Check**: `config/tasks.yaml` for instruction placeholders
+- **Check**: `workflows/crew.py` for instruction handling
+- **Check**: `services/content_service.py` for processing logic
 
 #### UI Issues
 - **Check**: `ui/components.py` for component logic
@@ -261,6 +308,7 @@ The core application package organized in clean architecture layers.
 - **Check**: `core/cache_manager.py` for caching effectiveness
 - **Check**: `repositories/cache_repository.py` for data access patterns
 - **Monitor**: Service factory for dependency creation
+- **Check**: `transcription/whisper.py` for audio optimization
 
 #### Authentication Issues
 - **Check**: `services/auth_service.py` for auth logic
@@ -275,11 +323,13 @@ The core application package organized in clean architecture layers.
 4. **Error Handling**: Implement comprehensive error handling with logging
 5. **Type Hints**: Use type hints throughout the codebase
 6. **Testing**: Write tests for business logic in `services/` and `workflows/`
+7. **Custom Instructions**: Keep instructions clear and focused on specific tasks
+8. **Transcription**: Use appropriate models based on quality vs. cost needs
 
 ### 🧪 **Testing Strategy**
 
 - **Unit Tests**: Focus on `services/`, `utils/`, and `models/`
-- **Integration Tests**: Test `repositories/` and `workflows/`
+- **Integration Tests**: Test `repositories/`, `workflows/`, and `transcription/`
 - **E2E Tests**: Test complete user flows through `adapters/`
 
 ## Getting Started
@@ -290,6 +340,41 @@ The core application package organized in clean architecture layers.
 4. **Navigate**: Use this documentation to find the right location for your changes
 
 ## New Features
+
+### 🎤 **Advanced Whisper Transcription**
+
+The application now includes an advanced transcription system using OpenAI's Whisper API:
+
+#### Key Features:
+- **Multiple Models**: Support for whisper-1, gpt-4o-transcribe, and gpt-4o-mini-transcribe
+- **Audio Extraction**: Efficient audio download from YouTube using yt-dlp
+- **Format Conversion**: Automatic conversion to optimal formats using FFmpeg
+- **Error Handling**: Robust fallback strategies for transcription failures
+- **Factory Pattern**: Flexible provider selection through transcription factory
+
+#### Configuration:
+```env
+# Transcription settings in .env
+DEFAULT_WHISPER_MODEL=gpt-4o-transcribe  # Default transcription model
+```
+
+### 💬 **Custom Instructions System**
+
+A powerful custom instructions system for tailoring content generation:
+
+#### Key Features:
+- **Template-Based**: Dynamic instruction insertion in agent task definitions
+- **Content-Type Specific**: Different instruction templates for each content type
+- **UI Integration**: User-friendly interface for specifying custom instructions
+- **Validation**: Input validation to ensure instructions are appropriate
+- **Default Templates**: Sensible defaults for common use cases
+
+#### Usage:
+Custom instructions can be applied to:
+- Blog posts
+- LinkedIn posts
+- Tweets
+- Action plans
 
 ### 💰 **Dynamic Cost Calculation System**
 
