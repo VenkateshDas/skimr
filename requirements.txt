@@ -24,4 +24,4 @@ supabase==2.15.2
 youtube_transcript_api==1.0.3
 yt_dlp==2025.5.22
 faiss-cpu==1.10.0
-aiohttp==3.10.10
+aiohttp
