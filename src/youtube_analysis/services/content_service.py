@@ -27,6 +27,7 @@ class ContentService:
         content_type: str,
         model_name: str = None,
         temperature: float = None,
+        custom_instruction: str = "",
         progress_callback: Optional[Callable[[int], None]] = None,
         status_callback: Optional[Callable[[str], None]] = None
     ) -> Tuple[Optional[str], Optional[Dict[str, int]]]:
@@ -40,6 +41,7 @@ class ContentService:
             content_type: Type of content to generate (task name)
             model_name: LLM model to use (defaults to config)
             temperature: Temperature for generation (defaults to config)
+            custom_instruction: Custom human instruction to append to the task
             progress_callback: Progress callback function
             status_callback: Status callback function
             
@@ -54,6 +56,8 @@ class ContentService:
                 temperature = config.llm.default_temperature
             
             logger.info(f"Generating {content_type} for video {video_id}")
+            if custom_instruction:
+                logger.info(f"Using custom instruction: {custom_instruction}")
             
             if status_callback:
                 status_callback(f"Generating {content_type}...")
@@ -101,6 +105,10 @@ class ContentService:
                 crew_inputs["summary"] = summary_output.content
                 crew_inputs["category"] = analysis_result.category.value
                 crew_inputs["context_tag"] = analysis_result.context_tag.value
+                
+            # Add custom instruction if provided
+            if custom_instruction:
+                crew_inputs["custom_instruction"] = f"\n\n**CUSTOM HUMAN INSTRUCTION (HIGH IMPORTANCE):**\n{custom_instruction}"
             
             # Create a mini crew with just the required task
             # First, always include summary task for context

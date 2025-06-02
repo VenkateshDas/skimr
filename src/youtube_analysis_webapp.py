@@ -689,12 +689,36 @@ class StreamlitWebApp:
             error_msg = f"Cannot generate content: Missing {', '.join(missing_fields)} from initial analysis."
             st.error(error_msg)
             return
+            
+        # Get content types map
+        content_types_map_to_task_key = {
+            "Action Plan": "analyze_and_plan_content",
+            "Blog Post": "write_blog_post",
+            "LinkedIn Post": "write_linkedin_post",
+            "X Tweet": "write_tweet"
+        }
+        task_key = content_types_map_to_task_key.get(content_type_key, content_type_key)
+        
+        # Get custom instruction directly from Streamlit session state
+        custom_instruction = ""
+        session_state_key = f"custom_instruction_{task_key}"
+        if session_state_key in st.session_state:
+            custom_instruction = st.session_state[session_state_key]
+        
+        # Log custom instruction if present
+        if custom_instruction:
+            logger.info(f"Using custom instruction for {content_type_key}: {custom_instruction}")
 
         with st.spinner(f"Generating {content_type_key}... This may take a moment."):
             try:
+                # Get settings and add custom instruction if provided
+                settings = self.session_manager.get_settings().copy()
+                if custom_instruction:
+                    settings["custom_instruction"] = custom_instruction
+                
                 content, error, token_usage = asyncio.run(
                     self.webapp_adapter.generate_additional_content(
-                        youtube_url, video_id, transcript_text, content_type_key, self.session_manager.get_settings()
+                        youtube_url, video_id, transcript_text, content_type_key, settings
                     )
                 )
                 if error:
@@ -712,13 +736,6 @@ class StreamlitWebApp:
                     st.info("💡 You can try generating this content again by clicking the button above.")
                 elif content:
                     st.success(f"{content_type_key} generated successfully! View it in the tabs.")
-                    content_types_map_to_task_key = {
-                        "Action Plan": "analyze_and_plan_content",
-                        "Blog Post": "write_blog_post",
-                        "LinkedIn Post": "write_linkedin_post",
-                        "X Tweet": "write_tweet"
-                    }
-                    task_key = content_types_map_to_task_key.get(content_type_key, content_type_key)
 
                     self.session_manager.update_task_output(task_key, content)
                     

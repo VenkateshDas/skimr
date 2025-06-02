@@ -77,6 +77,21 @@ def display_analysis_results(
                         actual_content = getattr(content, 'content', str(content))
                     
                     _display_content_with_copy(actual_content, content_type)
+                    
+                    # Disable regenerate for Full Report tab
+                    if task_key != "classify_and_summarize_content":
+                        # Add custom instruction field for regeneration
+                        st.markdown("---")
+                        st.markdown("### Regenerate with Custom Instructions")
+                        custom_instruction = st.text_area(
+                            f"Add custom instructions for regenerating this {tab_name}",
+                            key=f"custom_instruction_{task_key}",
+                            placeholder="Example: Focus more on the technical aspects, or Add more actionable steps, etc."
+                        )
+                        if st.button(f"Regenerate {tab_name}", key=f"regen_tab_{task_key}"):
+                            if on_demand_handler:
+                                on_demand_handler(task_key)
+                    
                 else:
                     # Content not yet generated
                     if task_key == "classify_and_summarize_content":
@@ -87,11 +102,19 @@ def display_analysis_results(
 
                     else:
                         st.info(f"{tab_name} not yet generated.")
+                        
+                        # Add custom instruction field
+                        st.markdown("### Custom Instructions")
+                        custom_instruction = st.text_area(
+                            f"Add custom instructions for this {tab_name}",
+                            key=f"custom_instruction_{task_key}",
+                            placeholder="Example: Focus more on the technical aspects, or Add more actionable steps, etc."
+                        )
+                        
                         if on_demand_handler:
-                            # Extract display name for the handler
-                            display_name = tab_name.split(" ", 1)[1] if " " in tab_name else tab_name
-                            if st.button(f"Generate {display_name}", key=f"gen_tab_{task_key}"):
-                                on_demand_handler(display_name)
+                            # Pass the backend task_key instead of display name
+                            if st.button(f"Generate {tab_name}", key=f"gen_tab_{task_key}"):
+                                on_demand_handler(task_key)
 
 
 def _display_content_with_copy(content: str, content_type: str) -> None:

@@ -83,6 +83,9 @@ analyze_and_plan_content:
 
     Tailor your plan to reflect how the information was presented (e.g., tutorial style, news context, etc.), ensuring each recommendation is direct and immediately implementable.
 
+    # Custom Instructions for the action plan
+    {custom_instruction}
+
   expected_output: >
     A single integrated response containing:
     1) Clear, broadly applicable analysis notes suitable for quick comprehension, including an emotional tone assessment.
@@ -120,6 +123,9 @@ write_blog_post:
     Aim for a 1000-1500 word blog post that would engage readers and provide value even for those who haven't watched the video.
     Format the blog post properly with Markdown for easy reading.
 
+    # Custom Instructions for the blog post
+    {custom_instruction}
+
   expected_output: >
     A comprehensive, well-structured blog post in Markdown format that thoroughly explains the video content
     in an engaging way, with proper formatting, subheadings, and appropriate tone for the content category.It must 
@@ -155,6 +161,9 @@ write_linkedin_post:
     - Stays within LinkedIn's optimal length (1300-1600 characters)
     
     The post should provide value to professionals in relevant fields while encouraging them to watch the full video.
+    
+    # Custom Instructions for the linkedin post
+    {custom_instruction}
 
   expected_output: >
     A concise, professional LinkedIn post that effectively summarizes key insights from the video,
@@ -193,6 +202,9 @@ write_tweet:
     
     The tweet should make users want to learn more while giving them a taste of the video's value.
     It must not look anything like a AI generated post. It must feel like a human wrote it.
+    
+    # Custom Instructions for the tweet
+    {custom_instruction}
 
   expected_output: >
     An engaging, concise tweet in the style of relevant category influencers that captures the

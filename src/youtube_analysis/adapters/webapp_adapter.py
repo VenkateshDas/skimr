@@ -166,8 +166,11 @@ class WebAppAdapter:
             # Extract settings
             model_name = settings.get("model", "gpt-4o-mini")
             temperature = settings.get("temperature", 0.2)
+            custom_instruction = settings.get("custom_instruction", "")
             
             logger.info(f"Generating {content_type} for video {video_id}")
+            if custom_instruction:
+                logger.info(f"Using custom instruction: {custom_instruction}")
             
             # Get content service from factory
             content_service = self.service_factory.get_content_service()
@@ -195,6 +198,7 @@ class WebAppAdapter:
                 content_type=task_name,
                 model_name=model_name,
                 temperature=temperature,
+                custom_instruction=custom_instruction,
                 progress_callback=self.callbacks.update_progress if self.callbacks else None,
                 status_callback=self.callbacks.update_status if self.callbacks else None
             )
