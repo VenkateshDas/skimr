@@ -274,17 +274,41 @@ def get_custom_video_player_html(
     if not default_lang and subtitles_data:
         default_lang = next(iter(subtitles_data))
 
-    # Prepare JS array of subtitle segments for the default language
+    # Prepare optimized JS array of subtitle segments for the default language
     import json
     segments = subtitles_data.get(default_lang, {}).get("segments", [])
-    js_segments = [
-        {
-            "start": float(seg.get("start", 0)),
-            "end": float(seg.get("start", 0)) + float(seg.get("duration", 0)),
-            "text": seg.get("text", "")
-        }
-        for seg in segments
-    ]
+    
+    # Optimize and validate segment timing
+    js_segments = []
+    for i, seg in enumerate(segments):
+        start = float(seg.get("start", 0))
+        duration = float(seg.get("duration", 0))
+        
+        # Ensure minimum duration for subtitle visibility
+        if duration <= 0:
+            # Calculate duration from next segment or use default
+            if i + 1 < len(segments):
+                next_start = float(segments[i + 1].get("start", start + 2))
+                duration = max(0.5, next_start - start)  # Minimum 0.5s visibility
+            else:
+                duration = 2.0  # Default 2s for last segment
+        
+        # Ensure segments don't overlap
+        end = start + duration
+        if i + 1 < len(segments):
+            next_start = float(segments[i + 1].get("start", end))
+            if end > next_start:
+                end = next_start - 0.1  # Leave small gap
+                duration = end - start
+        
+        text = seg.get("text", "").strip()
+        if text:  # Only include segments with text
+            js_segments.append({
+                "start": round(start, 3),
+                "end": round(end, 3),
+                "text": text
+            })
+    
     segments_json = json.dumps(js_segments)
 
     container_id = f"player_container_{video_id}"
@@ -313,6 +337,9 @@ def get_custom_video_player_html(
         var ytPlayer_{video_id} = null;
         var subtitleSegments_{video_id} = {segments_json};
         var currentSubtitle_{video_id} = '';
+        var currentSegmentIndex_{video_id} = 0;
+        var updateTimer_{video_id} = null;
+        var lastUpdateTime_{video_id} = 0;
         function onYouTubeIframeAPIReady() {{
             ytPlayer_{video_id} = new YT.Player('{player_id}', {{
                 height: '{height}',
@@ -331,24 +358,116 @@ def get_custom_video_player_html(
             }});
         }}
         function onPlayerReady_{video_id}(event) {{
-            setInterval(function() {{ updateSubtitle_{video_id}(); }}, 300);
+            console.log('YouTube player ready for {video_id}. Subtitle segments:', subtitleSegments_{video_id}.length);
+            startSubtitleUpdates_{video_id}();
         }}
-        function onPlayerStateChange_{video_id}(event) {{}}
+        
+        function onPlayerStateChange_{video_id}(event) {{
+            if (event.data === YT.PlayerState.PLAYING) {{
+                startSubtitleUpdates_{video_id}();
+            }} else if (event.data === YT.PlayerState.PAUSED || event.data === YT.PlayerState.ENDED) {{
+                stopSubtitleUpdates_{video_id}();
+            }}
+        }}
+        
+        function startSubtitleUpdates_{video_id}() {{
+            if (updateTimer_{video_id}) return; // Already running
+            
+            function updateLoop() {{
+                updateSubtitle_{video_id}();
+                updateTimer_{video_id} = requestAnimationFrame(updateLoop);
+            }}
+            updateLoop();
+        }}
+        
+        function stopSubtitleUpdates_{video_id}() {{
+            if (updateTimer_{video_id}) {{
+                cancelAnimationFrame(updateTimer_{video_id});
+                updateTimer_{video_id} = null;
+            }}
+        }}
+        
+        // Optimized binary search for subtitle segments
+        function findCurrentSubtitle_{video_id}(time, segments) {{
+            if (!segments || segments.length === 0) return null;
+            
+            // Performance optimization: check if we're still in the same segment
+            var currentIdx = currentSegmentIndex_{video_id};
+            if (currentIdx < segments.length) {{
+                var current = segments[currentIdx];
+                if (time >= current.start && time < current.end) {{
+                    return current;
+                }}
+            }}
+            
+            // Check next segment (common case for sequential playback)
+            if (currentIdx + 1 < segments.length) {{
+                var next = segments[currentIdx + 1];
+                if (time >= next.start && time < next.end) {{
+                    currentSegmentIndex_{video_id} = currentIdx + 1;
+                    return next;
+                }}
+            }}
+            
+            // Check previous segment (for seeking backwards)
+            if (currentIdx > 0) {{
+                var prev = segments[currentIdx - 1];
+                if (time >= prev.start && time < prev.end) {{
+                    currentSegmentIndex_{video_id} = currentIdx - 1;
+                    return prev;
+                }}
+            }}
+            
+            // Binary search for larger jumps (seeking far)
+            var left = 0;
+            var right = segments.length - 1;
+            
+            while (left <= right) {{
+                var mid = Math.floor((left + right) / 2);
+                var segment = segments[mid];
+                
+                if (time >= segment.start && time < segment.end) {{
+                    currentSegmentIndex_{video_id} = mid;
+                    return segment;
+                }} else if (time < segment.start) {{
+                    right = mid - 1;
+                }} else {{
+                    left = mid + 1;
+                }}
+            }}
+            
+            return null;
+        }}
+        
         function updateSubtitle_{video_id}() {{
             var player = ytPlayer_{video_id};
             if (!player || typeof player.getCurrentTime !== 'function') return;
+            
             var time = player.getCurrentTime();
+            
+            // Throttle updates slightly for performance (no need to update 60fps)
+            if (Math.abs(time - lastUpdateTime_{video_id}) < 0.05) return; // 50ms throttle
+            lastUpdateTime_{video_id} = time;
+            
             var segments = subtitleSegments_{video_id};
             var overlay = document.getElementById('{overlay_id}');
-            var sub = segments.find(function(s) {{ return time >= s.start && time < s.end; }});
-            if (sub && sub.text !== currentSubtitle_{video_id}) {{
-                overlay.textContent = sub.text;
-                currentSubtitle_{video_id} = sub.text;
-            }} else if (!sub) {{
-                overlay.textContent = '';
-                currentSubtitle_{video_id} = '';
+            
+            // Use optimized search
+            var sub = findCurrentSubtitle_{video_id}(time, segments);
+            var newText = sub ? sub.text : '';
+            
+            // Only update if text actually changed
+            if (newText !== currentSubtitle_{video_id}) {{
+                currentSubtitle_{video_id} = newText;
+                overlay.textContent = newText;
             }}
         }}
+        
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', function() {{
+            stopSubtitleUpdates_{video_id}();
+        }});
+        
         // If the API is already loaded, call the init function
         if (window.YT && window.YT.Player) {{
             onYouTubeIframeAPIReady();

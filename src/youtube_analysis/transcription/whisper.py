@@ -552,6 +552,55 @@ class WhisperTranscriber(BaseTranscriber):
             
         logger.info(f"Split audio into {len(chunk_paths)} equal chunks")
         return chunk_paths
+    
+    async def generate_subtitle_file(
+        self,
+        video_id: str,
+        output_subtitle_path: str,
+        language: str = "en",
+        model_name: str = None,
+        prompt: str = None
+    ) -> Optional[str]:
+        """
+        Generate subtitle file directly from YouTube video using enhanced chunking.
+        
+        Args:
+            video_id: YouTube video ID
+            output_subtitle_path: Path where subtitle file should be saved
+            language: ISO-639-1 language code
+            model_name: Whisper model to use
+            prompt: Optional prompt for transcription
+            
+        Returns:
+            Path to generated subtitle file or None if error
+        """
+        logger.info(f"Generating subtitle file for video {video_id}")
+        
+        try:
+            # Download audio first
+            async with self._download_audio(video_id) as audio_path:
+                mp3_path = await self._convert_to_mp3(audio_path)
+                audio_file = mp3_path or audio_path
+                
+                # Use the new subtitle generation service for better chunking and SRT generation
+                from ..service_factory import get_subtitle_generation_service
+                
+                subtitle_service = get_subtitle_generation_service()
+                result_path = subtitle_service.generate_subtitles_from_media(
+                    media_file_path=str(audio_file),
+                    output_subtitle_path=output_subtitle_path,
+                    language=language,
+                    prompt=prompt,
+                    temperature=0.0,
+                    whisper_model=model_name or self.default_model
+                )
+                
+                logger.info(f"Successfully generated subtitle file: {result_path}")
+                return result_path
+                
+        except Exception as e:
+            logger.error(f"Error generating subtitle file for video {video_id}: {str(e)}")
+            return None
 
     async def _split_audio_file(self, audio_path: Path, max_bytes: int) -> List[Path]:
         """

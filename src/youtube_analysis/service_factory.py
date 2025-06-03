@@ -2,7 +2,7 @@
 
 from .core import CacheManager, YouTubeClient, LLMManager
 from .repositories import CacheRepository, YouTubeRepository
-from .services import AnalysisService, TranscriptService, ChatService, ContentService
+from .services import AnalysisService, TranscriptService, ChatService, ContentService, SubtitleGenerationService
 from .services.translation_service import TranslationService
 from .workflows.video_analysis_workflow import VideoAnalysisWorkflow
 from .utils.logging import get_logger
@@ -24,6 +24,7 @@ class ServiceFactory:
         self._chat_service = None
         self._content_service = None
         self._translation_service = None
+        self._subtitle_generation_service = None
         self._workflow = None
         
         logger.info("Initialized ServiceFactory")
@@ -102,6 +103,12 @@ class ServiceFactory:
             self._translation_service = TranslationService(cache_repo, youtube_repo, llm_manager)
         return self._translation_service
     
+    def get_subtitle_generation_service(self) -> SubtitleGenerationService:
+        """Get or create subtitle generation service."""
+        if self._subtitle_generation_service is None:
+            self._subtitle_generation_service = SubtitleGenerationService()
+        return self._subtitle_generation_service
+    
     def get_video_analysis_workflow(self) -> VideoAnalysisWorkflow:
         """Get or create video analysis workflow."""
         if self._workflow is None:
@@ -165,6 +172,11 @@ def get_chat_service() -> ChatService:
 def get_translation_service() -> TranslationService:
     """Get the translation service."""
     return get_service_factory().get_translation_service()
+
+
+def get_subtitle_generation_service() -> SubtitleGenerationService:
+    """Get the subtitle generation service."""
+    return get_service_factory().get_subtitle_generation_service()
 
 
 async def cleanup_services():
