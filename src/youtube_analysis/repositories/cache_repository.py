@@ -591,6 +591,9 @@ class CacheRepository:
             # Clear new chat sessions
             self.smart_cache.cache_manager.delete("chat_session", f"chat_{video_id}")
             
+            # Clear translations
+            await self.delete_custom_data("translations", f"translated_transcript_{video_id}_*")
+            
             logger.info(f"Successfully cleared cache for video {video_id}")
             
         except Exception as e:
@@ -923,3 +926,58 @@ class CacheRepository:
             logger.info(f"Cleared custom data from cache for {category}/{key}")
         except Exception as e:
             logger.error(f"Error clearing custom data from cache: {str(e)}")
+
+    async def delete_custom_data(self, data_type: str, key_pattern: str) -> bool:
+        """
+        Delete custom data entries matching a pattern.
+        
+        Args:
+            data_type: Type of custom data (e.g., "translations")
+            key_pattern: Key pattern with optional wildcard (*) 
+                        e.g., "translated_transcript_abc123_*" to match all languages
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            is_wildcard = "*" in key_pattern
+            if is_wildcard:
+                # Handle wildcard pattern
+                base_pattern = key_pattern.replace("*", "")
+                
+                # First clear from memory cache
+                keys_to_remove = []
+                for cache_key in self.smart_cache._memory_cache.keys():
+                    if cache_key.startswith(f"{data_type}:{base_pattern}"):
+                        keys_to_remove.append(cache_key)
+                
+                for key in keys_to_remove:
+                    del self.smart_cache._memory_cache[key]
+                    logger.debug(f"Removed from memory cache: {key}")
+                
+                # Then clear from persistent cache
+                # Get all keys in the namespace
+                all_keys = self.cache_manager.get_all_keys(data_type)
+                if all_keys:
+                    for key in all_keys:
+                        if key.startswith(base_pattern):
+                            self.cache_manager.delete(data_type, key)
+                            logger.debug(f"Removed from persistent cache: {data_type}:{key}")
+            else:
+                # Direct key deletion
+                cache_key = f"{data_type}:{key_pattern}"
+                
+                # Clear from memory cache
+                if cache_key in self.smart_cache._memory_cache:
+                    del self.smart_cache._memory_cache[cache_key]
+                    logger.debug(f"Removed from memory cache: {cache_key}")
+                
+                # Clear from persistent cache
+                self.cache_manager.delete(data_type, key_pattern)
+                
+            logger.info(f"Successfully deleted custom data matching {data_type}:{key_pattern}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error deleting custom data {data_type}:{key_pattern}: {str(e)}")
+            return False

@@ -118,17 +118,43 @@ class YouTubeClient:
                 # Try Whisper transcription as fallback
                 try:
                     logger.info(f"No transcript available for {video_id}, trying Whisper transcription")
-                    whisper = WhisperTranscriber()
-                    transcript_obj = await whisper.get(video_id=video_id, language='en')
-                    if transcript_obj and transcript_obj.segments:
-                        transcript = transcript_obj.text
-                        logger.info(f"Successfully transcribed {video_id} with Whisper")
+                    
+                    # Defensive initialization to ensure no proxies are passed
+                    os.environ['PYTHONASYNCIODEBUG'] = '1'  # Debug more info about async execution
+                    
+                    # Explicitly filter environment variables for potential HTTP proxy settings
+                    proxy_vars = ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY']
+                    saved_env = {}
+                    
+                    # Temporarily unset proxy environment variables
+                    for var in proxy_vars:
+                        if var in os.environ:
+                            saved_env[var] = os.environ[var]
+                            del os.environ[var]
+                    
+                    logger.info("Temporarily disabled proxy environment variables for Groq")
+                    
+                    try:
+                        whisper = WhisperTranscriber()
+                        transcript_obj = await whisper.get(video_id=video_id, language='en')
                         
-                        # Cache the result
-                        if use_cache:
-                            self.cache.set("transcripts", cache_key, {"text": transcript})
+                        if transcript_obj and transcript_obj.segments:
+                            transcript = transcript_obj.text
+                            logger.info(f"Successfully transcribed {video_id} with Whisper")
+                            
+                            # Cache the result
+                            if use_cache:
+                                self.cache.set("transcripts", cache_key, {"text": transcript})
+                            
+                            return transcript
+                    finally:
+                        # Restore proxy environment variables
+                        for var, value in saved_env.items():
+                            os.environ[var] = value
                         
-                        return transcript
+                        # Remove debug flag
+                        if 'PYTHONASYNCIODEBUG' in os.environ:
+                            del os.environ['PYTHONASYNCIODEBUG']
                 except TranscriptUnavailable as e:
                     logger.warning(f"Whisper transcription failed: {str(e)}")
                 except Exception as e:
@@ -214,38 +240,63 @@ class YouTubeClient:
                 # Try Whisper transcription as fallback
                 try:
                     logger.info(f"No transcript available for {video_id}, trying Whisper transcription")
-                    whisper = WhisperTranscriber()
-                    transcript_obj = await whisper.get(video_id=video_id, language='en')
                     
-                    if transcript_obj and transcript_obj.segments:
-                        # Format with timestamps
-                        formatted_transcript = []
-                        transcript_list = []
+                    # Defensive initialization to ensure no proxies are passed
+                    os.environ['PYTHONASYNCIODEBUG'] = '1'  # Debug more info about async execution
+                    
+                    # Explicitly filter environment variables for potential HTTP proxy settings
+                    proxy_vars = ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY']
+                    saved_env = {}
+                    
+                    # Temporarily unset proxy environment variables
+                    for var in proxy_vars:
+                        if var in os.environ:
+                            saved_env[var] = os.environ[var]
+                            del os.environ[var]
+                    
+                    logger.info("Temporarily disabled proxy environment variables for Groq")
+                    
+                    try:
+                        whisper = WhisperTranscriber()
+                        transcript_obj = await whisper.get(video_id=video_id, language='en')
                         
-                        for segment in transcript_obj.segments:
-                            seconds = int(segment.start)
-                            minutes, seconds = divmod(seconds, 60)
-                            timestamp = f"{minutes:02d}:{seconds:02d}"
-                            formatted_transcript.append(f"[{timestamp}] {segment.text}")
+                        if transcript_obj and transcript_obj.segments:
+                            # Format with timestamps
+                            formatted_transcript = []
+                            transcript_list = []
                             
-                            # Add to list format for compatibility
-                            transcript_list.append({
-                                'text': segment.text,
-                                'start': segment.start,
-                                'duration': segment.duration or 0
-                            })
+                            for segment in transcript_obj.segments:
+                                seconds = int(segment.start)
+                                minutes, seconds = divmod(seconds, 60)
+                                timestamp = f"{minutes:02d}:{seconds:02d}"
+                                formatted_transcript.append(f"[{timestamp}] {segment.text}")
+                                
+                                # Add to list format for compatibility
+                                transcript_list.append({
+                                    'text': segment.text,
+                                    'start': segment.start,
+                                    'duration': segment.duration or 0
+                                })
+                            
+                            formatted_text = "\n".join(formatted_transcript)
+                            
+                            # Cache the result
+                            if use_cache:
+                                self.cache.set("transcripts", cache_key, {
+                                    "formatted": formatted_text,
+                                    "raw": transcript_list
+                                })
+                            
+                            logger.info(f"Successfully transcribed {video_id} with Whisper")
+                            return formatted_text, transcript_list
+                    finally:
+                        # Restore proxy environment variables
+                        for var, value in saved_env.items():
+                            os.environ[var] = value
                         
-                        formatted_text = "\n".join(formatted_transcript)
-                        
-                        # Cache the result
-                        if use_cache:
-                            self.cache.set("transcripts", cache_key, {
-                                "formatted": formatted_text,
-                                "raw": transcript_list
-                            })
-                        
-                        logger.info(f"Successfully transcribed {video_id} with Whisper")
-                        return formatted_text, transcript_list
+                        # Remove debug flag
+                        if 'PYTHONASYNCIODEBUG' in os.environ:
+                            del os.environ['PYTHONASYNCIODEBUG']
                 except TranscriptUnavailable as e:
                     logger.warning(f"Whisper transcription failed: {str(e)}")
                 except Exception as e:

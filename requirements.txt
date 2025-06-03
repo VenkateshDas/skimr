@@ -25,3 +25,10 @@ youtube_transcript_api==1.0.3
 yt_dlp==2025.5.22
 faiss-cpu==1.10.0
 aiohttp
+langdetect==1.0.9
+groq
+httpx==0.27.2
+pydub
+pysubs2
+ffmpeg-python
+streamlit-cookies-manager

@@ -8,6 +8,7 @@ from typing import Dict, Any, Optional
 from datetime import datetime
 from ..utils.logging import get_logger
 from ..core.config import config, get_default_settings
+import gc
 
 logger = get_logger("session_manager")
 
@@ -387,15 +388,25 @@ class StreamlitSessionManager:
     
     @staticmethod
     def reset_for_new_analysis():
-        """Reset state for starting a new analysis."""
-        StreamlitSessionManager.reset_analysis_state()
-        # Also reset any pending UI flags
-        st.session_state.content_generation_pending = False
-        st.session_state.content_type_generated = None
-        # Clear webapp_adapter reference
-        if hasattr(st.session_state, 'webapp_adapter'):
-            delattr(st.session_state, 'webapp_adapter')
-        logger.info("Session state reset for new analysis")
+        """Reset session state for a new analysis."""
+        # Keep authentication and guest count state
+        authenticated = StreamlitSessionManager.get_state("authenticated", False)
+        guest_count = StreamlitSessionManager.get_state("guest_analysis_count", 0)
+        
+        # Clear all session state
+        st.session_state.clear()
+        
+        # Restore authentication and guest count state
+        StreamlitSessionManager.set_state("authenticated", authenticated)
+        StreamlitSessionManager.set_state("guest_analysis_count", guest_count)
+        
+        # Initialize all states
+        StreamlitSessionManager.initialize_all_states()
+        
+        # Clear subtitle data
+        StreamlitSessionManager.clear_subtitle_data()
+        
+        logger.info("Reset session state for new analysis")
     
     @staticmethod
     def get_state(key: str, default: Any = None) -> Any:
@@ -1017,3 +1028,29 @@ class StreamlitSessionManager:
         except Exception as e:
             logger.error(f"Error initializing chat with cache: {str(e)}")
             return False
+
+    @staticmethod
+    def clear_subtitle_data():
+        """Clear subtitle and translation data from session state."""
+        # Clear _subtitles_data attribute by checking session state
+        if '_subtitles_data' in st.session_state:
+            del st.session_state['_subtitles_data']
+        
+        # Clear translation-related session states
+        video_id = StreamlitSessionManager.get_video_id()
+        if video_id:
+            # Find and clear all translation-related session states
+            keys_to_remove = []
+            for key in st.session_state:
+                if isinstance(key, str) and key.startswith(f"translated_segments_{video_id}_"):
+                    keys_to_remove.append(key)
+            
+            for key in keys_to_remove:
+                if key in st.session_state:
+                    del st.session_state[key]
+        
+        # Reset subtitle display flags
+        StreamlitSessionManager.set_state("show_video_with_subtitles", False)
+        StreamlitSessionManager.set_state("video_id_for_subtitles", None)
+        
+        logger.info("Cleared subtitle and translation data")

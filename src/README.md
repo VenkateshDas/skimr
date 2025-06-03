@@ -406,6 +406,55 @@ The application now includes a sophisticated cost calculation system that uses t
 
 The system maintains full backward compatibility and will automatically fall back to static costs if the API is unavailable.
 
+## Custom Subtitle Translation Feature
+
+The application now supports generating translated subtitles for YouTube videos in various languages, even for videos analyzed with GPT-4o-transcribe that don't have proper timestamps.
+
+### Testing the Feature
+
+1. **Setup**:
+   - Install the required dependencies: `pip install -r requirements.txt`
+   - Make sure your OpenAI API key is properly configured
+
+2. **Basic Translation Flow**:
+   - Select a YouTube video for analysis
+   - Choose your desired subtitle language in the Settings panel
+   - After analysis, go to the Transcript tab
+   - Click the "Translate to [Language]" button
+   - Wait for translation to complete
+   - Optionally download the subtitles in SRT or VTT format
+
+3. **Testing Timestamp Generation**:
+   - For videos transcribed with GPT-4o-transcribe (no timestamps):
+   - The system will automatically create artificial timestamps
+   - A notification will appear that timestamps are estimated
+   - Verify that segments appear logical and properly timed
+
+4. **Testing Export**:
+   - After translation, click "Export subtitles"
+   - Try both SRT and VTT formats
+   - Verify subtitle files work in media players
+
+### Known Limitations
+
+- Artificial timestamps are estimated based on text length and may not precisely match speech in the video
+- Very long videos may require batched translation, which could affect coherence between segments
+- Some special characters or symbols might not be properly preserved in translation
+
+### Troubleshooting
+
+- If translation fails, check your OpenAI API key permissions
+- Verify network connectivity for API calls
+- Clear cache if you encounter stale subtitle data
+- For large videos, monitor API usage to avoid rate limits
+
+### Future Enhancements
+
+- Add support for more advanced timestamp estimation algorithms
+- Implement direct VTT rendering in the video player
+- Support for specialized terminology glossaries in translation
+- User feedback mechanism for translation quality
+
 ## Support
 
 For questions about the architecture or where to make specific changes, refer to this documentation or contact the development team. 
