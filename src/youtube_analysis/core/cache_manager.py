@@ -187,3 +187,41 @@ class CacheManager:
         
         stats["total_size_mb"] = round(stats["total_size_mb"], 2)
         return stats
+
+    def get_all_keys(self, cache_type: str) -> list:
+        """
+        Get all keys in a specific cache namespace.
+        
+        Args:
+            cache_type: Type of cache (e.g., "translations")
+            
+        Returns:
+            List of keys in the namespace
+        """
+        cache_dir = Path(self.config.cache_dir, cache_type)
+        if not cache_dir.exists():
+            return []
+        
+        try:
+            # Get all JSON files in the cache directory
+            cache_files = list(cache_dir.glob("*.json"))
+            
+            # Extract original keys from files
+            keys = []
+            for cache_file in cache_files:
+                try:
+                    # Try to read the file to get the original key
+                    with open(cache_file, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        if 'key' in data:
+                            keys.append(data['key'])
+                        else:
+                            # If 'key' not stored, use the filename without extension
+                            keys.append(cache_file.stem)
+                except Exception as e:
+                    logger.warning(f"Error reading cache file {cache_file}: {e}")
+            
+            return keys
+        except Exception as e:
+            logger.error(f"Error getting keys for {cache_type}: {e}")
+            return []

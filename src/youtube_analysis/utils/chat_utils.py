@@ -161,7 +161,19 @@ def create_agent_graph(vectorstore: FAISS, video_metadata: Dict[str, Any], has_t
     
     # Use LLMManager to get the language model
     from ..core.llm_manager import LLMConfig
-    config = LLMConfig(model=model_name, temperature=temperature)
+    
+    # Determine provider based on model name
+    provider = None
+    if model_name.startswith("gpt"):
+        provider = "openai"
+    elif model_name.startswith("gemini"):
+        provider = "google"
+    elif model_name.startswith("claude"):
+        provider = "anthropic"
+    elif model_name.startswith("groq") or model_name.startswith("llama") or model_name.startswith("mixtral"):
+        provider = "groq"
+        
+    config = LLMConfig(model=model_name, temperature=temperature, provider=provider)
     llm = llm_manager.get_langchain_llm(config)
 
     # Create Tavily search tool

@@ -165,6 +165,57 @@ class StreamlitWebApp:
                 index=model_index,
                 key="model_select"
             )
+
+            # --- Add Transcription Model Selector ---
+            transcription_models = [
+                ("OpenAI Whisper", "openai"),
+                ("Groq Whisper", "groq")
+            ]
+            transcription_model_labels = [label for label, _ in transcription_models]
+            transcription_model_values = [value for _, value in transcription_models]
+            current_transcription_model = settings.get("transcription_model", "openai")
+            try:
+                transcription_model_index = transcription_model_values.index(current_transcription_model)
+            except ValueError:
+                transcription_model_index = 0
+                current_transcription_model = transcription_model_values[0]
+            selected_transcription_model_label = st.selectbox(
+                "Transcription Model",
+                options=transcription_model_labels,
+                index=transcription_model_index,
+                key="transcription_model_select"
+            )
+            selected_transcription_model = transcription_model_values[
+                transcription_model_labels.index(selected_transcription_model_label)
+            ]
+            # --- End Transcription Model Selector ---
+            
+            # Add language selection dropdown for subtitles
+            from youtube_analysis.utils.language_utils import get_supported_languages
+            
+            supported_languages = get_supported_languages()
+            language_options = list(supported_languages.items())
+            language_display = [f"{name} ({code})" for code, name in language_options]
+            
+            # Get current subtitle language setting or default to English
+            current_language = settings.get("subtitle_language", "en")
+            try:
+                language_index = [code for code, _ in language_options].index(current_language)
+            except ValueError:
+                language_index = 0  # Default to first language (presumably English)
+            
+            st.markdown("### Subtitle Translation")
+            st.info("Select a language to translate subtitles. After video analysis, go to the Transcript tab and click 'Translate to [Language]' button.")
+            
+            selected_language_display = st.selectbox(
+                "Target Language",
+                options=language_display,
+                index=language_index,
+                key="subtitle_language_select"
+            )
+            
+            # Extract language code from display string
+            selected_language_code = selected_language_display.split("(")[-1].split(")")[0].strip()
             
             temperature = st.slider(
                 "Creativity Level (Temperature)",
@@ -185,7 +236,9 @@ class StreamlitWebApp:
                 "model": model, 
                 "temperature": temperature, 
                 "use_cache": use_cache,
-                "analysis_types": config.ui.default_analysis_types.copy()
+                "subtitle_language": selected_language_code,
+                "analysis_types": config.ui.default_analysis_types.copy(),
+                "transcription_model": selected_transcription_model
             }
             self.session_manager.update_settings(updated_settings)
             os.environ["LLM_MODEL"] = model
@@ -352,32 +405,81 @@ class StreamlitWebApp:
         self._display_token_usage_and_performance(analysis_results)
 
     def _display_video_player_and_chat_columns(self, analysis_results: Dict[str, Any]):
-        st.markdown("<h2 class='sub-header'>🎬 Video & Interactive Chat</h2>", unsafe_allow_html=True)
-        video_id = analysis_results.get("video_id")
-        video_col, chat_col = st.columns([6, 4])
-
-        with video_col:
-            if video_id:
-                st.video(f"https://www.youtube.com/watch?v={video_id}")
+        """Display video player and chat interface in separate columns."""
+        col1, col2 = st.columns([7, 5], gap="large")
+        
+        with col1:
+            st.markdown("### YouTube Video")
+            
+            video_id = analysis_results.get("video_id")
+            target_language = self.session_manager.get_settings().get("subtitle_language", "en")
+            
+            # Check if we should display video with custom subtitles
+            show_with_subtitles = self.session_manager.get_state("show_video_with_subtitles", False)
+            video_id_for_subtitles = self.session_manager.get_state("video_id_for_subtitles", None)
+            
+            # Only show custom player if explicitly requested and for the correct video
+            if show_with_subtitles and video_id and video_id == video_id_for_subtitles:
+                # Get subtitles data from session state using the new key structure
+                subtitles_player_key = f"subtitles_for_player_{video_id}"
+                subtitles_data = self.session_manager.get_state(subtitles_player_key, {})
+                
+                if subtitles_data and len(subtitles_data) > 0:
+                    # Use the custom video player with Plyr.js
+                    from youtube_analysis.utils.subtitle_utils import get_custom_video_player_html
+                    from youtube_analysis.utils.language_utils import get_language_name
+                    
+                    # Get default language for display
+                    default_language = next(
+                        (lang for lang, info in subtitles_data.items() if info.get("default", False)),
+                        target_language
+                    )
+                    language_name = get_language_name(default_language) or default_language
+                    
+                    # Create HTML for custom player
+                    player_html = get_custom_video_player_html(
+                        video_id=video_id,
+                        subtitles_data=subtitles_data
+                    )
+                    
+                    # Display the player
+                    st.components.v1.html(player_html, height=450)
+                    
+                    # Show notification about subtitles
+                    st.markdown(f"<div style='background:rgba(0,0,0,0.04);color:#666;padding:8px 14px;border-radius:6px;font-size:15px;margin-bottom:2px;'>✅ Video is displayed with {language_name} subtitles</div>", unsafe_allow_html=True)
+                    st.markdown("<div style='background:rgba(0,0,0,0.02);color:#888;padding:7px 13px;border-radius:6px;font-size:14px;margin-bottom:8px;'>📝 You can change subtitle settings in the player controls</div>", unsafe_allow_html=True)
+                    
+                    # Add option to return to standard player
+                    if st.button("Use Standard Player", key="use_standard_player"):
+                        self.session_manager.set_state("show_video_with_subtitles", False)
+                        st.rerun()
+                else:
+                    # Standard video player as fallback
+                    st.video(f"https://www.youtube.com/watch?v={video_id}")
+                    st.warning("No subtitles available for custom player. Using standard player.")
             else:
-                st.warning("Video ID not found, cannot display player.")
-
-        with chat_col:
-            if self.session_manager.is_chat_enabled():
-                display_chat_interface(
-                    chat_messages=self.session_manager.get_chat_messages(),
-                    on_submit=self._handle_chat_message_submission,
-                    is_streaming=self.session_manager.get_state("is_chat_streaming", False),
-                    streaming_response_placeholder=self.session_manager.get_state("chat_streaming_placeholder", "")
-                )
-            else:
-                # Display a styled message when chat is not available
-                st.markdown("""
-                <div style="background: rgba(255, 177, 66, 0.2); border-left: 4px solid #ffb142; padding: 1.5rem; border-radius: 8px; margin-bottom: 1rem; height: 380px; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center;">
-                    <h3 style="margin-top: 0; color: #ffb142;">💬 Chat Not Available</h3>
-                    <p style="color: #666; margin-bottom: 0;">Chat functionality requires video analysis to be completed successfully. If you just analyzed a video, please wait a moment for chat to initialize.</p>
-                </div>
-                """, unsafe_allow_html=True)
+                # Standard video player
+                if video_id:
+                    st.video(f"https://www.youtube.com/watch?v={video_id}")
+                    
+                    # Show a hint about subtitle availability if we have subtitles data in session state
+                    subtitles_player_key = f"subtitles_for_player_{video_id}"
+                    subtitles_data_hint = self.session_manager.get_state(subtitles_player_key, {})
+                    if subtitles_data_hint and len(subtitles_data_hint) > 0:
+                        from youtube_analysis.utils.language_utils import get_language_name
+                        available_languages = [get_language_name(lang) or lang for lang in subtitles_data_hint.keys()]
+                        languages_list = ", ".join(available_languages)
+                        
+                        st.info(f"💡 Subtitles available in: {languages_list}. Go to Transcript tab to apply them to the video player.")
+                else:
+                    st.warning("Video ID not found, cannot display player.")
+        
+        with col2:
+            display_chat_interface(
+                analysis_results, 
+                on_message=self._handle_chat_message_submission,
+                on_reset=self._handle_reset_chat_button
+            )
 
     def _display_token_usage_and_performance(self, analysis_results: Dict[str, Any]):
         # Get cumulative and breakdown token usage from session manager
@@ -924,7 +1026,11 @@ class StreamlitWebApp:
         if video_id:
             # Clear all cache including chat sessions and token usage
             self.webapp_adapter.clear_cache_for_video(video_id)
-            st.success(f"Cache (including chat history and token usage) cleared for video {video_id}.")
+            
+            # Explicitly clear subtitle data from session state
+            self.session_manager.clear_subtitle_data()
+            
+            st.success(f"Cache (including chat history, token usage, and translations) cleared for video {video_id}.")
             self.session_manager.reset_for_new_analysis()
             self.session_manager.set_state("current_youtube_url", "")
             st.rerun()
@@ -944,10 +1050,23 @@ class StreamlitWebApp:
 
 def main():
     # Configuration Check
-    is_config_valid, missing_vars = validate_config()
-    if not is_config_valid:
-        logger.warning(f"Configuration incomplete. Missing: {', '.join(missing_vars)}")
-
+    validate_config()
+    
+    # Initialize services early for better performance
+    from youtube_analysis.service_factory import (
+        get_service_factory, get_video_analysis_workflow, 
+        get_analysis_service, get_transcript_service,
+        get_translation_service
+    )
+    
+    # Pre-initialize services
+    service_factory = get_service_factory()
+    _ = get_video_analysis_workflow()  # Initialize workflow
+    _ = get_analysis_service()         # Initialize analysis service
+    _ = get_transcript_service()       # Initialize transcript service
+    _ = get_translation_service()      # Initialize translation service
+    
+    # Create and run the app
     app = StreamlitWebApp()
     app.run()
 

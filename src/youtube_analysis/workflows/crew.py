@@ -35,7 +35,17 @@ class YouTubeAnalysisCrew:
         self.llm_manager = LLMManager()
         # Get CrewAI LLM instance
         from ..core.llm_manager import LLMConfig
-        llm_config = LLMConfig(model=model_name, temperature=temperature)
+        
+        # Determine provider based on model name
+        provider = None
+        if model_name.startswith("gpt"):
+            provider = "openai"
+        elif model_name.startswith("gemini"):
+            provider = "google"
+        elif model_name.startswith("claude"):
+            provider = "anthropic"
+            
+        llm_config = LLMConfig(model=model_name, temperature=temperature, provider=provider)
         self.llm = self.llm_manager.get_crewai_llm(llm_config)
 
     @agent

@@ -418,7 +418,14 @@ class WebAppAdapter:
             # Clear token usage cache
             success4 = asyncio.run(self._clear_token_usage_cache(video_id))
             
-            if all([success1, success2, success3, success4]):
+            # Clear translation cache
+            success5 = asyncio.run(self._clear_translation_cache(video_id))
+            
+            # Clear subtitle data from session state
+            from youtube_analysis.ui.session_manager import StreamlitSessionManager
+            StreamlitSessionManager.clear_subtitle_data()
+            
+            if all([success1, success2, success3, success4, success5]):
                 logger.info(f"Successfully cleared all cache for video {video_id}")
                 return True
             else:
@@ -451,6 +458,21 @@ class WebAppAdapter:
             return True
         except Exception as e:
             logger.error(f"Error clearing token usage cache: {e}")
+            return False
+
+    async def _clear_translation_cache(self, video_id: str) -> bool:
+        """Clear translation cache for a video."""
+        try:
+            workflow = self.service_factory.get_video_analysis_workflow()
+            # Access cache repository through analysis service
+            cache_repo = workflow.analysis_service.cache_repo
+            
+            # Clear translations from custom data
+            await cache_repo.delete_custom_data("translations", f"translated_transcript_{video_id}_*")
+            logger.info(f"Cleared translation cache for video {video_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error clearing translation cache: {e}")
             return False
 
     # Token Usage Caching Methods
