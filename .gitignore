@@ -65,3 +65,5 @@ PRD.md
 .claude
 .devcontainer/
 .pytest_cache/
+
+node_modules/
