@@ -20,6 +20,7 @@ pytube==15.0.0
 reportlab==4.4.1
 Requests==2.32.3
 streamlit==1.44.1
+gradio>=4.0.0
 supabase==2.15.2
 youtube_transcript_api==1.0.3
 yt_dlp==2025.5.22
