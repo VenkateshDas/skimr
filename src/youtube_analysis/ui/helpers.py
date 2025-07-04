@@ -68,14 +68,21 @@ def load_css():
 
 
 def get_skimr_logo_base64() -> Optional[str]:
-    """Returns the base64 encoded Skimr logo for embedding in HTML."""
-    # Logo file path
-    logo_path = Path("src/youtube_analysis/logo/logo_v2.png")
-    
-    # Check if the logo file exists
+    """Return the base64-encoded Skimr logo for embedding in HTML.
+
+    This helper now builds the file path relative to the *module* location
+    instead of relying on the current working directory. This makes the logo
+    resolution robust whether the application is executed from the project
+    root, installed as a package, or invoked by a process manager.
+    """
+
+    # Build logo path relative to the current file:
+    # helpers.py -> ui/ -> (parents[1]) youtube_analysis/ -> logo/logo_v2.png
+    logo_path = Path(__file__).resolve().parents[1] / "logo" / "logo_v2.png"
+
     if not logo_path.exists():
         return None
-    
+
     try:
         with open(logo_path, "rb") as img_file:
             return base64.b64encode(img_file.read()).decode()

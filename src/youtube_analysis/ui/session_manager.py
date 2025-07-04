@@ -390,15 +390,22 @@ class StreamlitSessionManager:
     def reset_for_new_analysis():
         """Reset session state for a new analysis."""
         # Keep authentication and guest count state
+        # Preserve full authentication context to avoid logout issues when resetting state
         authenticated = StreamlitSessionManager.get_state("authenticated", False)
         guest_count = StreamlitSessionManager.get_state("guest_analysis_count", 0)
+        user_obj = StreamlitSessionManager.get_state("user")
+        show_auth_flag = StreamlitSessionManager.get_state("show_auth", False)
         
         # Clear all session state
         st.session_state.clear()
         
-        # Restore authentication and guest count state
+        # Restore preserved authentication context
         StreamlitSessionManager.set_state("authenticated", authenticated)
         StreamlitSessionManager.set_state("guest_analysis_count", guest_count)
+        # Also restore user object and auth UI visibility flag
+        if user_obj is not None:
+            StreamlitSessionManager.set_state("user", user_obj)
+        StreamlitSessionManager.set_state("show_auth", show_auth_flag)
         
         # Initialize all states
         StreamlitSessionManager.initialize_all_states()
