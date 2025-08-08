@@ -12,7 +12,7 @@ from ..service_factory import get_service_factory
 from ..utils.logging import get_logger
 from ..utils.youtube_utils import validate_youtube_url, extract_video_id, get_video_info
 from ..utils.cache_utils import clear_analysis_cache
-from ..utils.video_highlights import clear_highlights_cache
+# Highlights utility removed to keep code lean
 
 logger = get_logger("webapp_adapter")
 
@@ -32,9 +32,31 @@ class WebAppAdapter:
         return validate_youtube_url(url)
     
     def get_video_info(self, url: str) -> Optional[Dict[str, Any]]:
-        """Get video information for preview."""
+        """Get video information for preview using repository/client path for consistency."""
         try:
-            return get_video_info(url)
+            # Prefer unified repository path so SSL/options are consistent
+            youtube_repo = self.service_factory.get_youtube_repository()
+            # The repository exposes async methods; bridge safely from sync context
+            async def fetch():
+                info_obj = await youtube_repo._get_video_info(url)  # internal but consistent with repo usage
+                if not info_obj:
+                    return None
+                return {
+                    "video_id": info_obj.video_id,
+                    "title": getattr(info_obj, "title", f"YouTube Video ({info_obj.video_id})"),
+                    "description": getattr(info_obj, "description", ""),
+                    "thumbnail_url": getattr(info_obj, "thumbnail_url", f"https://img.youtube.com/vi/{info_obj.video_id}/maxresdefault.jpg"),
+                    "youtube_url": url,
+                }
+            try:
+                return asyncio.run(fetch())
+            except RuntimeError:
+                # Event loop already running; schedule temporary loop to fetch
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # Cannot block; fall back to lightweight utils path to avoid UI hang
+                    return get_video_info(url)
+                return loop.run_until_complete(fetch())
         except Exception as e:
             logger.error(f"Error getting video info: {e}")
             return None
@@ -334,14 +356,23 @@ class WebAppAdapter:
             # Get transcript service
             transcript_service = self.service_factory.get_transcript_service()
             
-            # Get formatted transcripts
-            timestamped, segments = asyncio.run(
-                transcript_service.get_formatted_transcripts(
+            # Get formatted transcripts with robust event loop handling
+            async def fetch_transcripts():
+                return await transcript_service.get_formatted_transcripts(
                     youtube_url=youtube_url,
                     video_id=video_id,
                     use_cache=use_cache
                 )
-            )
+            try:
+                timestamped, segments = asyncio.run(fetch_transcripts())
+            except RuntimeError:
+                # Event loop already running; try using current loop
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # Schedule task and return failure gracefully if we cannot await
+                    logger.warning("Event loop already running, cannot synchronously fetch transcripts; returning no transcript")
+                    return None, None, "Could not retrieve transcript in current context"
+                timestamped, segments = loop.run_until_complete(fetch_transcripts())
             
             if not timestamped or not segments:
                 return None, None, "Could not retrieve transcript"
@@ -353,51 +384,7 @@ class WebAppAdapter:
             logger.error(error_msg, exc_info=True)
             return None, None, error_msg
     
-    async def get_video_highlights(
-        self,
-        youtube_url: str,
-        video_id: str,
-        settings: Dict[str, Any]
-    ) -> Tuple[Optional[str], Optional[List[Dict]], Optional[str]]:
-        """
-        Generate video highlights.
-        
-        Returns:
-            Tuple of (video path, highlight segments, error message)
-        """
-        try:
-            logger.info(f"Generating highlights for video {video_id}")
-            
-            # Extract settings
-            max_highlights = settings.get("max_highlights", 3)
-            model_name = settings.get("model", "gpt-4o-mini")
-            temperature = settings.get("temperature", 0.2)
-            
-            # Get content service (or dedicated highlights service if available)
-            content_service = self.service_factory.get_content_service()
-            
-            if hasattr(content_service, 'generate_video_highlights'):
-                video_path, segments = await content_service.generate_video_highlights(
-                    youtube_url=youtube_url,
-                    video_id=video_id,
-                    max_highlights=max_highlights,
-                    model_name=model_name,
-                    temperature=temperature,
-                    progress_callback=self.callbacks.update_progress if self.callbacks else None,
-                    status_callback=self.callbacks.update_status if self.callbacks else None
-                )
-                
-                if video_path and segments:
-                    return video_path, segments, None
-                else:
-                    return None, None, "Failed to generate highlights"
-            else:
-                return None, None, "Highlights generation not available"
-                
-        except Exception as e:
-            error_msg = f"Error generating highlights: {str(e)}"
-            logger.error(error_msg, exc_info=True)
-            return None, None, error_msg
+    # Removed video highlights generation to reduce scope and dependencies
     
     def clear_cache_for_video(self, video_id: str) -> bool:
         """Clear all cached data for a specific video."""
@@ -405,12 +392,8 @@ class WebAppAdapter:
             # Clear analysis cache
             success1 = clear_analysis_cache(video_id)
             
-            # Clear highlights cache if available
-            try:
-                success2 = clear_highlights_cache(video_id)
-            except Exception as e:
-                logger.warning(f"Could not clear highlights cache: {e}")
-                success2 = True  # Don't fail if highlights cache not available
+            # Highlights cache removed
+            success2 = True
             
             # Clear service layer cache
             success3 = asyncio.run(self._clear_service_cache(video_id))

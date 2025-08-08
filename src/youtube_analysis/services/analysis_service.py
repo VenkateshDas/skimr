@@ -208,7 +208,9 @@ class AnalysisService:
                 "youtube_url": video_data.youtube_url,
                 "transcript": video_data.transcript,
                 "current_datetime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "video_title": video_data.video_info.title
+                "video_title": video_data.video_info.title,
+                # Always provide this so task templates with {custom_instruction} don't fail
+                "custom_instruction": ""
             }
             
             logger.info(f"Executing crew with {len(crew.tasks)} tasks")

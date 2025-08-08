@@ -327,8 +327,8 @@ class TranslationService:
         input_cost_per_1k = 0.0015  # $0.0015 per 1K input tokens
         output_cost_per_1k = 0.002   # $0.002 per 1K output tokens
         
-        # If model specified, use specific rates
-        if model and "gpt-4" in model:
+        # If model specified, use specific rates (treat GPT-4 and GPT-5 similarly here)
+        if model and ("gpt-4" in model or "gpt-5" in model):
             input_cost_per_1k = 0.03  # $0.03 per 1K input tokens
             output_cost_per_1k = 0.06  # $0.06 per 1K output tokens
         

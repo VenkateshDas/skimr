@@ -1,0 +1,814 @@
+"""
+Robust transcript fetching engine with multiple data sources and intelligent fallback strategies.
+
+This module provides a centralized, robust approach to fetching YouTube transcripts with:
+- Multiple data source strategies (YouTube API, Whisper, etc.)
+- Intelligent language detection and prioritization
+- Comprehensive error handling and classification
+- Circuit breaker pattern for failing services
+- Exponential backoff retry mechanisms
+- Performance monitoring and metrics
+"""
+
+import asyncio
+import time
+import random
+import ssl
+import urllib3
+from typing import Optional, List, Dict, Any, Tuple, Union
+from dataclasses import dataclass, field
+from enum import Enum
+from contextlib import asynccontextmanager
+import re
+
+import requests
+from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api import (
+    TranscriptsDisabled,
+    NoTranscriptFound,
+    CouldNotRetrieveTranscript,
+    VideoUnavailable,
+)
+# Handle version differences where NoTranscriptAvailable may not be exported
+try:
+    from youtube_transcript_api import NoTranscriptAvailable  # type: ignore
+except Exception:
+    try:
+        from youtube_transcript_api._errors import NoTranscriptAvailable  # type: ignore
+    except Exception:  # pragma: no cover - fallback for very old/new versions
+        class NoTranscriptAvailable(Exception):
+            pass
+try:
+    from youtube_transcript_api import TooManyRequests  # Newer versions
+except Exception:  # pragma: no cover - backwards compatibility
+    class TooManyRequests(Exception):
+        pass
+from youtube_transcript_api.formatters import TextFormatter
+
+from ..transcription import WhisperTranscriber, TranscriptUnavailable
+from ..models import TranscriptSegment, VideoData, VideoInfo
+from ..utils.logging import get_logger
+from .cache_manager import CacheManager
+from ..utils.ssl_config import get_ssl_config
+
+logger = get_logger("transcript_fetcher")
+
+
+class TranscriptSource(Enum):
+    """Available transcript sources."""
+    YOUTUBE_API = "youtube_api"
+    WHISPER_OPENAI = "whisper_openai"
+    WHISPER_GROQ = "whisper_groq"
+    MANUAL_CAPTIONS = "manual_captions"
+    AUTO_GENERATED = "auto_generated"
+
+
+class TranscriptError(Exception):
+    """Base class for transcript-related errors."""
+    pass
+
+
+class TranscriptUnavailableError(TranscriptError):
+    """Transcript is not available for this video."""
+    pass
+
+
+class TranscriptTemporaryError(TranscriptError):
+    """Temporary error that might resolve with retry."""
+    pass
+
+
+class TranscriptRateLimitError(TranscriptError):
+    """Rate limit exceeded."""
+    pass
+
+
+@dataclass
+class TranscriptResult:
+    """Result of transcript fetching operation."""
+    success: bool
+    transcript: Optional[str] = None
+    segments: Optional[List[Dict[str, Any]]] = None
+    source: Optional[TranscriptSource] = None
+    language: Optional[str] = None
+    error: Optional[str] = None
+    attempt_count: int = 0
+    fetch_time_ms: int = 0
+
+
+@dataclass
+class CircuitBreakerState:
+    """Circuit breaker state for a specific source."""
+    failures: int = 0
+    last_failure_time: float = 0
+    state: str = "closed"  # closed, open, half_open
+    failure_threshold: int = 5
+    recovery_timeout: int = 300  # 5 minutes
+
+
+@dataclass
+class LanguagePreference:
+    """Language preference configuration."""
+    primary_languages: List[str] = field(default_factory=lambda: ['en'])
+    secondary_languages: List[str] = field(default_factory=lambda: ['de', 'es', 'fr', 'it', 'pt', 'ru', 'ja', 'ko', 'zh', 'hi', 'ar'])
+    auto_detect_enabled: bool = True
+    prefer_manual_captions: bool = True
+
+
+class RobustTranscriptFetcher:
+    """
+    Robust transcript fetching engine with multiple strategies and intelligent fallbacks.
+    """
+    
+    def __init__(
+        self,
+        cache_manager: Optional[CacheManager] = None,
+        language_preferences: Optional[LanguagePreference] = None,
+        max_retries: int = 3,
+        base_retry_delay: float = 1.0,
+        max_retry_delay: float = 30.0,
+        enable_circuit_breaker: bool = True
+    ):
+        self.cache = cache_manager or CacheManager()
+        self.language_prefs = language_preferences or LanguagePreference()
+        self.max_retries = max_retries
+        self.base_retry_delay = base_retry_delay
+        self.max_retry_delay = max_retry_delay
+        self.enable_circuit_breaker = enable_circuit_breaker
+        
+        # Configure SSL settings
+        self.ssl_config = get_ssl_config()
+        # Prepare HTTP session for libraries that allow injection (e.g., youtube_transcript_api>=1.0)
+        self._http_session = requests.Session()
+        self.ssl_config.configure_requests_session(self._http_session)
+        
+        # Circuit breaker states for each source
+        self.circuit_breakers: Dict[TranscriptSource, CircuitBreakerState] = {
+            source: CircuitBreakerState() for source in TranscriptSource
+        }
+        
+        # Whisper transcribers for different providers
+        self._whisper_openai = None
+        self._whisper_groq = None
+        
+        # Performance metrics
+        self.metrics = {
+            'total_requests': 0,
+            'success_rate': 0.0,
+            'avg_response_time': 0.0,
+            'source_success_rates': {source: 0.0 for source in TranscriptSource}
+        }
+        
+        logger.info("Initialized RobustTranscriptFetcher")
+    
+    def _get_ytt_api(self) -> Any:
+        """Return a configured YouTubeTranscriptApi instance when supported."""
+        try:
+            # Newer API supports passing an HTTP session
+            return YouTubeTranscriptApi(http_client=self._http_session)  # type: ignore[call-arg]
+        except TypeError:
+            # Older versions don't accept constructor args, return class for static usage
+            return YouTubeTranscriptApi
+
+    @staticmethod
+    def _normalize_transcript_entries(entries: Any) -> List[Dict[str, Any]]:
+        """Normalize various transcript return types to a list of dicts.
+
+        Handles:
+        - List[dict]
+        - FetchedTranscript with .to_raw_data()
+        - Iterable of snippet objects with .text/.start/.duration
+        """
+        # FetchedTranscript with to_raw_data
+        try:
+            to_raw = getattr(entries, 'to_raw_data', None)
+            if callable(to_raw):
+                return list(to_raw())
+        except Exception:
+            pass
+
+        # Already a list of dicts
+        if isinstance(entries, list) and (not entries or isinstance(entries[0], dict)):
+            return entries
+
+        # Iterable of objects
+        normalized: List[Dict[str, Any]] = []
+        try:
+            for item in entries:
+                try:
+                    if isinstance(item, dict):
+                        text = item.get('text', '').strip()
+                        start = float(item.get('start', 0))
+                        duration = float(item.get('duration', 0)) if 'duration' in item else 0.0
+                    else:
+                        text = str(getattr(item, 'text', '')).strip()
+                        start = float(getattr(item, 'start', 0) or 0)
+                        duration = float(getattr(item, 'duration', 0) or 0)
+                    if text:
+                        normalized.append({'text': text, 'start': start, 'duration': duration})
+                except Exception:
+                    continue
+        except Exception:
+            normalized = []
+        return normalized
+    
+    @property
+    def whisper_openai(self) -> WhisperTranscriber:
+        """Lazy initialization of OpenAI Whisper transcriber."""
+        if self._whisper_openai is None:
+            self._whisper_openai = WhisperTranscriber(provider="openai")
+        return self._whisper_openai
+    
+    @property
+    def whisper_groq(self) -> WhisperTranscriber:
+        """Lazy initialization of Groq Whisper transcriber."""
+        if self._whisper_groq is None:
+            self._whisper_groq = WhisperTranscriber(provider="groq")
+        return self._whisper_groq
+    
+    async def fetch_transcript(
+        self,
+        video_id: str,
+        youtube_url: str,
+        use_cache: bool = True,
+        preferred_language: Optional[str] = None,
+        fallback_to_whisper: bool = True
+    ) -> TranscriptResult:
+        """
+        Fetch transcript using robust multi-strategy approach.
+        
+        Args:
+            video_id: YouTube video ID
+            youtube_url: Full YouTube URL
+            use_cache: Whether to use cached results
+            preferred_language: Preferred language code (overrides config)
+            fallback_to_whisper: Whether to use Whisper as fallback
+            
+        Returns:
+            TranscriptResult with success status and data
+        """
+        start_time = time.time()
+        self.metrics['total_requests'] += 1
+        
+        # Check cache first
+        if use_cache:
+            cached_result = await self._get_cached_transcript(video_id)
+            if cached_result:
+                logger.debug(f"Using cached transcript for {video_id}")
+                return cached_result
+        
+        # Determine language strategy
+        languages_to_try = self._build_language_strategy(preferred_language)
+        
+        # Define fetching strategies in order of preference
+        strategies = [
+            (TranscriptSource.YOUTUBE_API, self._fetch_youtube_transcript),
+        ]
+        
+        if fallback_to_whisper:
+            strategies.extend([
+                (TranscriptSource.WHISPER_OPENAI, self._fetch_whisper_transcript_openai),
+                (TranscriptSource.WHISPER_GROQ, self._fetch_whisper_transcript_groq),
+            ])
+        
+        # Try each strategy
+        last_error = None
+        for source, fetch_func in strategies:
+            if not self._is_source_available(source):
+                logger.debug(f"Skipping {source.value} due to circuit breaker")
+                continue
+            
+            try:
+                result = await self._execute_with_retry(
+                    fetch_func, video_id, youtube_url, languages_to_try, source
+                )
+                
+                if result.success:
+                    # Update metrics and cache result
+                    fetch_time_ms = int((time.time() - start_time) * 1000)
+                    result.fetch_time_ms = fetch_time_ms
+                    
+                    self._update_success_metrics(source, fetch_time_ms)
+                    
+                    if use_cache:
+                        await self._cache_transcript_result(video_id, result)
+                    
+                    logger.info(f"Successfully fetched transcript for {video_id} using {source.value}")
+                    return result
+                else:
+                    last_error = result.error
+                    self._record_failure(source)
+                    
+            except Exception as e:
+                last_error = str(e)
+                self._record_failure(source)
+                logger.warning(f"Strategy {source.value} failed for {video_id}: {e}")
+        
+        # All strategies failed
+        self._update_failure_metrics()
+        return TranscriptResult(
+            success=False,
+            error=f"All transcript sources failed. Last error: {last_error}",
+            fetch_time_ms=int((time.time() - start_time) * 1000)
+        )
+    
+    async def _fetch_youtube_transcript(
+        self, 
+        video_id: str, 
+        youtube_url: str, 
+        languages: List[str],
+        source: TranscriptSource
+    ) -> TranscriptResult:
+        """Fetch transcript using YouTube Transcript API with manual/auto preference and translation fallback."""
+        try:
+            # Build preferred target language from strategy (first language)
+            lang_groups = self._group_languages(languages)
+            preferred_targets = lang_groups[0] if lang_groups else ['en']
+            preferred_target = preferred_targets[0] if preferred_targets else 'en'
+
+            # First try the simple direct fetch path (works on newer API)
+            try:
+                api = self._get_ytt_api()
+                direct_languages = preferred_targets or ['en']
+                if hasattr(api, 'fetch'):
+                    fetched = api.fetch(video_id, languages=direct_languages)  # type: ignore[call-arg]
+                    entries = self._normalize_transcript_entries(fetched)
+                    if entries:
+                        transcript_text = ' '.join([seg['text'] for seg in entries])
+                        detected_lang = self._detect_transcript_language(transcript_text)
+                        return TranscriptResult(
+                            success=True,
+                            transcript=transcript_text,
+                            segments=entries,
+                            source=source,
+                            language=detected_lang or (direct_languages[0] if direct_languages else 'en'),
+                        )
+            except TranscriptRateLimitError:
+                raise
+            except Exception:
+                # Fall through to list-based strategy
+                pass
+
+            # List available transcripts for the video (support both legacy and new APIs)
+            transcript_tracks = None
+            try:
+                # Legacy static method (<=0.6.x)
+                if hasattr(YouTubeTranscriptApi, 'list_transcripts'):
+                    transcript_tracks = YouTubeTranscriptApi.list_transcripts(video_id)  # type: ignore[attr-defined]
+                else:
+                    raise AttributeError
+            except Exception:
+                # New API (>=1.0): instance method .list(video_id)
+                api = self._get_ytt_api()
+                if hasattr(api, 'list'):
+                    transcript_tracks = api.list(video_id)  # type: ignore[call-arg]
+                else:
+                    transcript_tracks = None
+
+            # Helper to pick the best matching track
+            def select_track() -> Optional[Any]:
+                # 1) Try manually created transcripts in preferred languages
+                if self.language_prefs.prefer_manual_captions:
+                    for lang in preferred_targets:
+                        try:
+                            return transcript_tracks.find_manually_created_transcript([lang])
+                        except Exception:
+                            continue
+                # 2) Try any manual transcript if not found in preferred languages
+                if self.language_prefs.prefer_manual_captions:
+                    for t in transcript_tracks:
+                        try:
+                            if not getattr(t, 'is_generated', False):
+                                return t
+                        except Exception:
+                            continue
+                # 3) Try auto-generated in preferred languages
+                for lang in preferred_targets:
+                    try:
+                        return transcript_tracks.find_generated_transcript([lang])
+                    except Exception:
+                        continue
+                # 4) Fall back to any available transcript
+                for t in transcript_tracks:
+                    return t
+                return None
+
+            selected = select_track() if transcript_tracks is not None else None
+            if not selected:
+                # Fallback: if we cannot get a TranscriptList, try direct fetch using language preferences (new API)
+                try:
+                    api = self._get_ytt_api()
+                    # Determine languages list for direct fetch
+                    languages_for_fetch = languages or ['en']
+                    if hasattr(api, 'fetch'):
+                        fetched = api.fetch(video_id, languages=languages_for_fetch)  # type: ignore[call-arg]
+                        # Normalize fetched transcript
+                        try:
+                            raw_entries = getattr(fetched, 'to_raw_data', lambda: list(fetched))()
+                        except Exception:
+                            raw_entries = list(fetched)
+                        transcript_entries = raw_entries
+                        if not transcript_entries:
+                            raise TranscriptUnavailableError("Empty transcript returned by YouTube")
+                        # Build segments
+                        segments = []
+                        for item in transcript_entries:
+                            try:
+                                text = item.get('text', '').strip()
+                                start = float(item.get('start', 0))
+                                duration = float(item.get('duration', 0)) if 'duration' in item else 0.0
+                                if text:
+                                    segments.append({'text': text, 'start': start, 'duration': duration})
+                            except Exception:
+                                continue
+                        if not segments:
+                            raise TranscriptUnavailableError("No usable segments in transcript")
+                        transcript_text = ' '.join([seg['text'] for seg in segments])
+                        detected_lang = self._detect_transcript_language(transcript_text)
+                        return TranscriptResult(
+                            success=True,
+                            transcript=transcript_text,
+                            segments=segments,
+                            source=source,
+                            language=detected_lang or (languages[0] if languages else 'en'),
+                        )
+                except (TranscriptUnavailableError, TranscriptRateLimitError):
+                    raise
+                except Exception:
+                    pass
+                raise TranscriptUnavailableError("No transcript tracks available")
+
+            # If selected language differs and translation is supported, translate to preferred target
+            try:
+                selected_lang = getattr(selected, 'language_code', None)
+                if preferred_target and selected_lang and selected_lang != preferred_target and getattr(selected, 'is_translatable', False):
+                    selected = selected.translate(preferred_target)
+                    selected_lang = preferred_target
+            except Exception:
+                # Continue with original language if translation fails
+                pass
+
+            # Fetch the transcript entries
+            try:
+                transcript_entries = selected.fetch()
+            except TooManyRequests as e:
+                raise TranscriptRateLimitError(f"Rate limit exceeded: {e}")
+            except (NoTranscriptFound, NoTranscriptAvailable, TranscriptsDisabled, VideoUnavailable, CouldNotRetrieveTranscript) as e:
+                raise TranscriptUnavailableError(f"No transcript available: {e}")
+            except Exception as e:
+                # Intermittent or network errors
+                error_msg = str(e).lower()
+                if 'certificate verify failed' in error_msg or 'ssl' in error_msg:
+                    raise TranscriptTemporaryError(f"SSL certificate error: {e}")
+                raise TranscriptTemporaryError(f"YouTube transcript fetch error: {e}")
+
+            # Normalize entries to list of dicts
+            transcript_entries = self._normalize_transcript_entries(transcript_entries)
+
+            if not transcript_entries:
+                raise TranscriptUnavailableError("Empty transcript returned by YouTube")
+
+            # Normalize and format
+            segments = transcript_entries
+
+            if not segments:
+                raise TranscriptUnavailableError("No usable segments in transcript")
+
+            transcript_text = ' '.join([seg['text'] for seg in segments])
+            detected_lang = self._detect_transcript_language(transcript_text)
+
+            return TranscriptResult(
+                success=True,
+                transcript=transcript_text,
+                segments=segments,
+                source=source,
+                language=detected_lang or getattr(selected, 'language_code', None) or preferred_target,
+            )
+
+        except (TranscriptUnavailableError, TranscriptRateLimitError):
+            raise
+        except Exception as e:
+            # Treat unknown errors as temporary to allow retry/backoff
+            raise TranscriptTemporaryError(f"YouTube API error: {e}")
+    
+    async def _fetch_whisper_transcript_openai(
+        self, 
+        video_id: str, 
+        youtube_url: str, 
+        languages: List[str],
+        source: TranscriptSource
+    ) -> TranscriptResult:
+        """Fetch transcript using OpenAI Whisper."""
+        try:
+            primary_lang = languages[0] if languages else 'en'
+            transcript_obj = await self.whisper_openai.get(
+                video_id=video_id, 
+                language=primary_lang
+            )
+            
+            if transcript_obj and transcript_obj.segments:
+                segments = [
+                    {
+                        "text": seg.text,
+                        "start": seg.start,
+                        "duration": seg.duration or 0
+                    }
+                    for seg in transcript_obj.segments
+                ]
+                
+                return TranscriptResult(
+                    success=True,
+                    transcript=transcript_obj.text,
+                    segments=segments,
+                    source=source,
+                    language=primary_lang
+                )
+            else:
+                raise TranscriptUnavailableError("Whisper OpenAI returned empty transcript")
+                
+        except TranscriptUnavailable as e:
+            raise TranscriptUnavailableError(f"Whisper OpenAI unavailable: {e}")
+        except Exception as e:
+            raise TranscriptTemporaryError(f"Whisper OpenAI error: {e}")
+    
+    async def _fetch_whisper_transcript_groq(
+        self, 
+        video_id: str, 
+        youtube_url: str, 
+        languages: List[str],
+        source: TranscriptSource
+    ) -> TranscriptResult:
+        """Fetch transcript using Groq Whisper."""
+        try:
+            primary_lang = languages[0] if languages else 'en'
+            transcript_obj = await self.whisper_groq.get(
+                video_id=video_id, 
+                language=primary_lang
+            )
+            
+            if transcript_obj and transcript_obj.segments:
+                segments = [
+                    {
+                        "text": seg.text,
+                        "start": seg.start,
+                        "duration": seg.duration or 0
+                    }
+                    for seg in transcript_obj.segments
+                ]
+                
+                return TranscriptResult(
+                    success=True,
+                    transcript=transcript_obj.text,
+                    segments=segments,
+                    source=source,
+                    language=primary_lang
+                )
+            else:
+                raise TranscriptUnavailableError("Whisper Groq returned empty transcript")
+                
+        except TranscriptUnavailable as e:
+            raise TranscriptUnavailableError(f"Whisper Groq unavailable: {e}")
+        except Exception as e:
+            raise TranscriptTemporaryError(f"Whisper Groq error: {e}")
+    
+    async def _execute_with_retry(
+        self, 
+        fetch_func, 
+        video_id: str, 
+        youtube_url: str, 
+        languages: List[str],
+        source: TranscriptSource
+    ) -> TranscriptResult:
+        """Execute fetch function with retry logic and exponential backoff."""
+        last_exception = None
+        
+        for attempt in range(self.max_retries + 1):
+            try:
+                result = await fetch_func(video_id, youtube_url, languages, source)
+                
+                if attempt > 0:
+                    logger.info(f"Succeeded on attempt {attempt + 1} for {video_id} using {source.value}")
+                
+                return result
+                
+            except TranscriptUnavailableError as e:
+                # Don't retry for unavailable transcripts
+                return TranscriptResult(
+                    success=False,
+                    error=str(e),
+                    source=source,
+                    attempt_count=attempt + 1
+                )
+                
+            except TranscriptRateLimitError as e:
+                # Rate limit - wait longer before retry
+                if attempt < self.max_retries:
+                    delay = min(self.base_retry_delay * (3 ** attempt), self.max_retry_delay)
+                    logger.warning(f"Rate limit for {source.value}, waiting {delay}s before retry {attempt + 1}")
+                    await asyncio.sleep(delay)
+                    last_exception = e
+                else:
+                    return TranscriptResult(
+                        success=False,
+                        error=str(e),
+                        source=source,
+                        attempt_count=attempt + 1
+                    )
+                    
+            except TranscriptTemporaryError as e:
+                # Temporary error - retry with exponential backoff
+                if attempt < self.max_retries:
+                    delay = min(self.base_retry_delay * (2 ** attempt) + random.uniform(0, 1), self.max_retry_delay)
+                    logger.warning(f"Temporary error for {source.value}, waiting {delay:.2f}s before retry {attempt + 1}: {e}")
+                    await asyncio.sleep(delay)
+                    last_exception = e
+                else:
+                    return TranscriptResult(
+                        success=False,
+                        error=str(e),
+                        source=source,
+                        attempt_count=attempt + 1
+                    )
+                    
+            except Exception as e:
+                # Unexpected error - treat as temporary
+                if attempt < self.max_retries:
+                    delay = min(self.base_retry_delay * (2 ** attempt), self.max_retry_delay)
+                    logger.error(f"Unexpected error for {source.value}, waiting {delay:.2f}s before retry {attempt + 1}: {e}")
+                    await asyncio.sleep(delay)
+                    last_exception = e
+                else:
+                    return TranscriptResult(
+                        success=False,
+                        error=f"Unexpected error: {e}",
+                        source=source,
+                        attempt_count=attempt + 1
+                    )
+        
+        # All retries exhausted
+        return TranscriptResult(
+            success=False,
+            error=f"Max retries exceeded. Last error: {last_exception}",
+            source=source,
+            attempt_count=self.max_retries + 1
+        )
+    
+    def _build_language_strategy(self, preferred_language: Optional[str]) -> List[str]:
+        """Build intelligent language priority list."""
+        languages = []
+        
+        # Add preferred language first
+        if preferred_language:
+            languages.append(preferred_language)
+        
+        # Add primary languages
+        for lang in self.language_prefs.primary_languages:
+            if lang not in languages:
+                languages.append(lang)
+        
+        # Add secondary languages
+        for lang in self.language_prefs.secondary_languages:
+            if lang not in languages:
+                languages.append(lang)
+        
+        return languages
+    
+    def _group_languages(self, languages: List[str]) -> List[List[str]]:
+        """Group languages for progressive fallback strategy."""
+        if not languages:
+            return [['en']]
+        
+        groups = []
+        
+        # Group 1: Primary languages (first 3)
+        primary = languages[:3]
+        if primary:
+            groups.append(primary)
+        
+        # Group 2: Extended set (first 7)
+        if len(languages) > 3:
+            extended = languages[:7]
+            groups.append(extended)
+        
+        # Group 3: All languages
+        if len(languages) > 7:
+            groups.append(languages)
+        
+        return groups
+    
+    def _detect_transcript_language(self, text: str) -> Optional[str]:
+        """Detect language of transcript text (basic implementation)."""
+        if not text or len(text.strip()) < 50:
+            return None
+        
+        # Basic language detection based on common words/patterns
+        text_lower = text.lower()
+        
+        # English patterns
+        if any(word in text_lower for word in ['the', 'and', 'you', 'that', 'this', 'with', 'for']):
+            return 'en'
+        
+        # German patterns
+        if any(word in text_lower for word in ['der', 'die', 'das', 'und', 'ist', 'mit', 'für']):
+            return 'de'
+        
+        # Spanish patterns
+        if any(word in text_lower for word in ['el', 'la', 'y', 'que', 'de', 'con', 'para']):
+            return 'es'
+        
+        # French patterns
+        if any(word in text_lower for word in ['le', 'la', 'et', 'que', 'de', 'avec', 'pour']):
+            return 'fr'
+        
+        return None
+    
+    def _is_source_available(self, source: TranscriptSource) -> bool:
+        """Check if source is available based on circuit breaker state."""
+        if not self.enable_circuit_breaker:
+            return True
+        
+        breaker = self.circuit_breakers[source]
+        current_time = time.time()
+        
+        if breaker.state == "open":
+            # Check if we can transition to half-open
+            if current_time - breaker.last_failure_time > breaker.recovery_timeout:
+                breaker.state = "half_open"
+                logger.info(f"Circuit breaker for {source.value} transitioning to half-open")
+                return True
+            return False
+        
+        return True  # closed or half_open
+    
+    def _record_failure(self, source: TranscriptSource):
+        """Record failure for circuit breaker."""
+        if not self.enable_circuit_breaker:
+            return
+        
+        breaker = self.circuit_breakers[source]
+        breaker.failures += 1
+        breaker.last_failure_time = time.time()
+        
+        if breaker.failures >= breaker.failure_threshold:
+            breaker.state = "open"
+            logger.warning(f"Circuit breaker for {source.value} opened after {breaker.failures} failures")
+    
+    def _record_success(self, source: TranscriptSource):
+        """Record success for circuit breaker."""
+        if not self.enable_circuit_breaker:
+            return
+        
+        breaker = self.circuit_breakers[source]
+        breaker.failures = 0
+        breaker.state = "closed"
+    
+    def _update_success_metrics(self, source: TranscriptSource, response_time_ms: int):
+        """Update success metrics."""
+        self._record_success(source)
+        # Update metrics here (simplified)
+    
+    def _update_failure_metrics(self):
+        """Update failure metrics."""
+        # Update metrics here (simplified)
+        pass
+    
+    async def _get_cached_transcript(self, video_id: str) -> Optional[TranscriptResult]:
+        """Get cached transcript result."""
+        cache_key = f"robust_transcript_{video_id}"
+        cached = self.cache.get("transcripts", cache_key)
+        
+        if cached:
+            return TranscriptResult(
+                success=True,
+                transcript=cached.get("transcript"),
+                segments=cached.get("segments"),
+                source=TranscriptSource(cached.get("source", "youtube_api")),
+                language=cached.get("language")
+            )
+        
+        return None
+    
+    async def _cache_transcript_result(self, video_id: str, result: TranscriptResult):
+        """Cache successful transcript result."""
+        if result.success:
+            cache_key = f"robust_transcript_{video_id}"
+            cache_data = {
+                "transcript": result.transcript,
+                "segments": result.segments,
+                "source": result.source.value if result.source else None,
+                "language": result.language,
+                "cached_at": time.time()
+            }
+            self.cache.set("transcripts", cache_key, cache_data)
+    
+    def get_metrics(self) -> Dict[str, Any]:
+        """Get performance metrics."""
+        return self.metrics.copy()
+    
+    def reset_circuit_breakers(self):
+        """Reset all circuit breakers (for testing/admin purposes)."""
+        for breaker in self.circuit_breakers.values():
+            breaker.failures = 0
+            breaker.state = "closed"
+            breaker.last_failure_time = 0
+        logger.info("All circuit breakers reset") 

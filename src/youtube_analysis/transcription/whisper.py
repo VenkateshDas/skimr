@@ -7,6 +7,7 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Union
+import requests
 import re
 import math
 
@@ -17,6 +18,7 @@ from pydub import AudioSegment
 from .base import BaseTranscriber, TranscriptUnavailable
 from .models import Transcript, TranscriptSegment
 from ..utils.subtitle_utils import chunk_words_to_cues
+from ..utils.ssl_config import get_ssl_config
 
 logger = logging.getLogger("youtube_analysis.transcription")
 
@@ -122,6 +124,39 @@ class WhisperTranscriber(BaseTranscriber):
                 transcript_segments = await self._post_process_transcript(transcript_segments, language)
         return Transcript(video_id=video_id, language=language, source=self.provider, segments=transcript_segments)
 
+    async def _transcribe_audio_to_srt(
+        self,
+        *,
+        audio_file_path: str,
+        output_subtitle_path: str,
+        language: str,
+        model_name: str,
+        prompt: Optional[str]
+    ) -> Optional[str]:
+        """Transcribe the given audio file and write SRT to output_subtitle_path."""
+        try:
+            # Reuse the get() path to obtain segments quickly
+            tmp_video_id = "local_audio"
+            # Create faux transcript by calling provider on direct file
+            # We call the lower-level helpers directly for efficiency
+            if self.provider == "groq":
+                segments = await self._call_groq_whisper(Path(audio_file_path), language, model_name, prompt)
+            else:
+                segments = await self._call_openai_whisper(Path(audio_file_path), language, model_name, prompt)
+
+            # Build cues and write SRT
+            cues = segments
+            from ..utils.subtitle_utils import generate_srt_content
+            srt_text = generate_srt_content(cues)
+            out_path = Path(output_subtitle_path)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.write(srt_text)
+            return str(out_path)
+        except Exception as e:
+            logger.error(f"Failed to transcribe audio to SRT: {e}")
+            return None
+
     async def _post_process_transcript(
         self, 
         segments: List[TranscriptSegment], 
@@ -200,28 +235,69 @@ class WhisperTranscriber(BaseTranscriber):
                 "quiet": True,
                 "outtmpl": f"{tmpdir}/%(id)s.%(ext)s",
                 "noplaylist": True,
-                "nocheckcertificate": True,
                 "ignoreerrors": False,
             }
             
+            # Configure SSL settings
+            ssl_config = get_ssl_config()
+            ytdlp_opts = ssl_config.configure_yt_dlp_options(ytdlp_opts)
+            
             loop = asyncio.get_running_loop()
-            try:
-                logger.debug("Attempting to download audio with format: %s", self._AUDIO_FMT)
-                await loop.run_in_executor(None, yt_dlp.YoutubeDL(ytdlp_opts).download, [url])
-            except Exception as e:
-                logger.warning("Failed to download with primary format: %s. Trying fallback format: %s", 
-                               self._AUDIO_FMT, self._AUDIO_FMT_FALLBACK)
-                ytdlp_opts["format"] = self._AUDIO_FMT_FALLBACK
+            # If SSL is disabled, try Piped API to avoid yt-dlp metadata SSL
+            if not getattr(ssl_config, 'verify_ssl', True):
                 try:
+                    await loop.run_in_executor(None, self._download_audio_via_piped, video_id, tmpdir)
+                except Exception as e:
+                    raise TranscriptUnavailable(f"Failed to download audio via Piped: {e}") from e
+            else:
+                try:
+                    logger.debug("Attempting to download audio with format: %s", self._AUDIO_FMT)
                     await loop.run_in_executor(None, yt_dlp.YoutubeDL(ytdlp_opts).download, [url])
-                except Exception as fallback_e:
-                    raise TranscriptUnavailable(f"Failed to download audio: {str(fallback_e)}") from fallback_e
+                except Exception:
+                    logger.warning("Failed to download with primary format: %s. Trying fallback format: %s", 
+                                   self._AUDIO_FMT, self._AUDIO_FMT_FALLBACK)
+                    ytdlp_opts["format"] = self._AUDIO_FMT_FALLBACK
+                    try:
+                        await loop.run_in_executor(None, yt_dlp.YoutubeDL(ytdlp_opts).download, [url])
+                    except Exception as fallback_e:
+                        raise TranscriptUnavailable(f"Failed to download audio: {str(fallback_e)}") from fallback_e
             
             # locate downloaded file
             audio_files = list(Path(tmpdir).glob(f"{video_id}.*"))
             if not audio_files:
                 raise TranscriptUnavailable("yt-dlp failed to download audio")
             yield audio_files[0]
+
+    def _download_audio_via_piped(self, video_id: str, tmpdir: str) -> None:
+        base = os.environ.get("PIPED_BASE_URL", "https://piped.video")
+        streams_url = f"{base}/api/v1/streams/{video_id}"
+        session = requests.Session()
+        get_ssl_config().configure_requests_session(session)
+        resp = session.get(streams_url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        audio_streams = data.get("audioStreams") or []
+        if not audio_streams:
+            raise RuntimeError("No audio streams listed by Piped")
+        preferred = None
+        for s in audio_streams:
+            mime = (s.get("mimeType") or "").lower()
+            if "mp4" in mime or "m4a" in mime:
+                preferred = s
+                break
+        if preferred is None:
+            preferred = audio_streams[0]
+        stream_url = preferred.get("url")
+        if not stream_url:
+            raise RuntimeError("Audio stream missing URL")
+        ext = "m4a" if "mp4" in (preferred.get("mimeType") or "").lower() else "webm"
+        out_path = Path(tmpdir) / f"{video_id}.{ext}"
+        with session.get(stream_url, stream=True, timeout=60) as r:
+            r.raise_for_status()
+            with open(out_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
 
     async def _convert_to_mp3(self, input_path: Path) -> Optional[Path]:
         """Convert the input file to MP3 format using FFmpeg."""
@@ -582,21 +658,16 @@ class WhisperTranscriber(BaseTranscriber):
                 mp3_path = await self._convert_to_mp3(audio_path)
                 audio_file = mp3_path or audio_path
                 
-                # Use the new subtitle generation service for better chunking and SRT generation
-                from ..service_factory import get_subtitle_generation_service
-                
-                subtitle_service = get_subtitle_generation_service()
-                result_path = subtitle_service.generate_subtitles_from_media(
-                    media_file_path=str(audio_file),
+                # Directly transcribe and produce SRT here to avoid extra service
+                srt_path = await self._transcribe_audio_to_srt(
+                    audio_file_path=str(audio_file),
                     output_subtitle_path=output_subtitle_path,
                     language=language,
-                    prompt=prompt,
-                    temperature=0.0,
-                    whisper_model=model_name or self.default_model
+                    model_name=model_name or self.default_model,
+                    prompt=prompt
                 )
-                
-                logger.info(f"Successfully generated subtitle file: {result_path}")
-                return result_path
+                logger.info(f"Successfully generated subtitle file: {srt_path}")
+                return srt_path
                 
         except Exception as e:
             logger.error(f"Error generating subtitle file for video {video_id}: {str(e)}")

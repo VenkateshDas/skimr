@@ -1,6 +1,6 @@
 """Utility functions for working with YouTube videos."""
 
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+from youtube_transcript_api import YouTubeTranscriptApi
 from urllib.parse import urlparse, parse_qs
 import re
 import time
@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 import json
 from pathlib import Path
 import requests
-from youtube_transcript_api.formatters import TextFormatter
+# Removed TextFormatter import (unused)
 
 try:
     from pytube import YouTube
@@ -66,55 +66,12 @@ def is_cache_valid(cache_file: Path) -> bool:
     return file_age.days < CACHE_EXPIRY_DAYS
 
 def get_cached_transcription(video_id: str) -> Optional[str]:
-    """
-    Get cached transcription for a video if available.
-    
-    Args:
-        video_id: The YouTube video ID
-    
-    Returns:
-        The cached transcription or None if not found/expired
-    """
-    try:
-        cache_file = get_cache_dir() / f"{get_cache_key(video_id, 'transcript')}.json"
-        
-        if is_cache_valid(cache_file):
-            with open(cache_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                return data.get('transcript')
-        
-        return None
-    except Exception as e:
-        logger.warning(f"Error reading cache for video {video_id}: {str(e)}")
-        return None
+    """Deprecated: transcript caching is handled in repositories. Kept for backward compat."""
+    return None
 
 def cache_transcription(video_id: str, transcript: str) -> bool:
-    """
-    Cache a video transcription.
-    
-    Args:
-        video_id: The YouTube video ID
-        transcript: The transcription text
-    
-    Returns:
-        True if caching was successful, False otherwise
-    """
-    try:
-        cache_file = get_cache_dir() / f"{get_cache_key(video_id, 'transcript')}.json"
-        
-        data = {
-            'video_id': video_id,
-            'transcript': transcript,
-            'timestamp': datetime.now().isoformat()
-        }
-        
-        with open(cache_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        
-        return True
-    except Exception as e:
-        logger.warning(f"Error caching transcription for video {video_id}: {str(e)}")
-        return False
+    """Deprecated: transcript caching is handled in repositories. Kept for backward compat."""
+    return False
 
 def extract_video_id(url: str) -> Optional[str]:
     """
@@ -197,7 +154,7 @@ def get_transcript(url: str, use_cache: bool = True) -> str:
                 logger.info(f"Using cached transcript for video {video_id}")
                 return cached_transcript
         
-        # Get transcript from YouTube
+        # Get transcript from YouTube directly (legacy path)
         try:
             transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', "de", "ta", "hi"])
         except Exception as e:

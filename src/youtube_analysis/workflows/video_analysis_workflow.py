@@ -191,20 +191,20 @@ class VideoAnalysisWorkflow:
         # Try to get video info for complete results
         video_info = None
         try:
-            from ..repositories import YouTubeRepository
-            from ..core import CacheManager
-            cache_manager = CacheManager() 
-            youtube_repo = YouTubeRepository(cache_manager)
-            
-            video_info_obj = await youtube_repo._get_video_info(analysis_result.youtube_url)
-            if video_info_obj:
-                video_info = {
-                    "title": video_info_obj.title,
-                    "description": video_info_obj.description,
-                    "duration": getattr(video_info_obj, 'duration', None),
-                    "view_count": getattr(video_info_obj, 'view_count', None),
-                    "channel_name": getattr(video_info_obj, 'channel_name', None),
-                }
+            # Use analysis_service's repositories to avoid constructing new, incorrect dependencies
+            youtube_repo = getattr(self.analysis_service, "youtube_repo", None)
+            if youtube_repo and hasattr(youtube_repo, "_get_video_info"):
+                video_info_obj = await youtube_repo._get_video_info(analysis_result.youtube_url)
+                if video_info_obj:
+                    video_info = {
+                        "title": getattr(video_info_obj, 'title', None) or f"YouTube Video ({analysis_result.video_id})",
+                        "description": getattr(video_info_obj, 'description', ""),
+                        "duration": getattr(video_info_obj, 'duration', None),
+                        "view_count": getattr(video_info_obj, 'view_count', None),
+                        "channel_name": getattr(video_info_obj, 'channel_name', None),
+                    }
+            else:
+                logger.debug("YouTube repository not available from analysis_service; skipping enhanced video info fetch")
         except Exception as e:
             logger.warning(f"Could not get video info: {str(e)}")
             video_info = {"title": "YouTube Video", "description": ""}

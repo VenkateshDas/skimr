@@ -87,6 +87,7 @@ class StreamlitWebApp:
     def initialize_app(self):
         logger.debug("Initializing app: CSS, session, auth.")
         load_css()
+        # Defer progress/status placeholder setup to the specific UI sections
         self.session_manager.initialize_all_states()
         init_auth_state()
 
@@ -315,6 +316,15 @@ class StreamlitWebApp:
                     type="primary",
                     disabled=not youtube_url
                 )
+            
+            # Progress and status placeholders directly under the input area
+            # Ensure the progress bar is rendered in the correct place
+            progress_container = st.container()
+            try:
+                if hasattr(self.callbacks, "setup"):
+                    self.callbacks.setup(progress_container)
+            except Exception as _e:
+                pass
                 
             # Show guest analysis status if not authenticated
             if not self.session_manager.get_state("authenticated"):
@@ -810,6 +820,14 @@ class StreamlitWebApp:
         # Log custom instruction if present
         if custom_instruction:
             logger.info(f"Using custom instruction for {content_type_key}: {custom_instruction}")
+
+        # Place a localized progress/status area for single content generation
+        gen_progress_container = st.container()
+        try:
+            if hasattr(self.callbacks, "setup"):
+                self.callbacks.setup(gen_progress_container)
+        except Exception:
+            pass
 
         with st.spinner(f"Generating {content_type_key}... This may take a moment."):
             try:

@@ -710,48 +710,7 @@ class TranscriptService:
             logger.error(f"Error in translate_transcript_sync: {str(e)}", exc_info=True)
             return None, None
     
-    def generate_subtitles_for_media(
-        self,
-        media_file_path: str,
-        output_subtitle_path: str,
-        language: str = None,
-        prompt: str = None,
-        temperature: float = 0.0,
-        whisper_model: str = "whisper-1"
-    ) -> Optional[str]:
-        """
-        Generate subtitles for a media file using the advanced subtitle generation service.
-        
-        Args:
-            media_file_path: Path to the media file (audio or video)
-            output_subtitle_path: Path where subtitle file should be saved
-            language: ISO-639-1 language code (optional, auto-detect if None)
-            prompt: Optional prompt to improve transcription quality
-            temperature: Sampling temperature (0.0 to 1.0)
-            whisper_model: Whisper model to use
-            
-        Returns:
-            Path to generated subtitle file or None if error
-        """
-        try:
-            from ..service_factory import get_subtitle_generation_service
-            
-            subtitle_service = get_subtitle_generation_service()
-            result_path = subtitle_service.generate_subtitles_from_media(
-                media_file_path=media_file_path,
-                output_subtitle_path=output_subtitle_path,
-                language=language,
-                prompt=prompt,
-                temperature=temperature,
-                whisper_model=whisper_model
-            )
-            
-            logger.info(f"Successfully generated subtitles: {result_path}")
-            return result_path
-            
-        except Exception as e:
-            logger.error(f"Error generating subtitles for media file {media_file_path}: {str(e)}")
-            return None
+    # Removed unused subtitle generation via external service to keep code lean
     
     def generate_subtitle_file_from_segments(
         self,
@@ -810,51 +769,4 @@ class TranscriptService:
             logger.error(f"Error generating subtitle file from segments: {str(e)}")
             return None
     
-    def generate_enhanced_subtitle_file_for_youtube(
-        self,
-        youtube_url: str,
-        output_subtitle_path: str,
-        language: str = "en",
-        model_name: str = None,
-        prompt: str = None,
-        use_cache: bool = True
-    ) -> Optional[str]:
-        """
-        Generate subtitle file for YouTube video using enhanced transcription with better chunking.
-        
-        Args:
-            youtube_url: YouTube URL
-            output_subtitle_path: Path where subtitle file should be saved
-            language: ISO-639-1 language code
-            model_name: Whisper model to use
-            prompt: Optional prompt for transcription
-            use_cache: Whether to use cached results
-            
-        Returns:
-            Path to generated subtitle file or None if error
-        """
-        try:
-            video_id = self.youtube_repo.extract_video_id(youtube_url)
-            if not video_id:
-                logger.error(f"Could not extract video ID from URL: {youtube_url}")
-                return None
-            
-            # Use the enhanced WhisperTranscriber to generate subtitle file directly
-            result_path = asyncio.run(self.whisper_transcriber.generate_subtitle_file(
-                video_id=video_id,
-                output_subtitle_path=output_subtitle_path,
-                language=language,
-                model_name=model_name,
-                prompt=prompt
-            ))
-            
-            if result_path:
-                logger.info(f"Successfully generated enhanced subtitle file: {result_path}")
-                return result_path
-            else:
-                logger.error(f"Failed to generate enhanced subtitle file for {video_id}")
-                return None
-                
-        except Exception as e:
-            logger.error(f"Error generating enhanced subtitle file for {youtube_url}: {str(e)}")
-            return None
+    # Removed enhanced subtitle file generation helper to reduce maintenance surface

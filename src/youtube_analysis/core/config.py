@@ -49,6 +49,7 @@ class LLMConfig:
     
     # Available models for UI selection
     available_models: List[str] = field(default_factory=lambda: _parse_list_env('LLM_AVAILABLE_MODELS', [
+        'gpt-5', 'gpt-5-mini',
         'gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo',
         'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-pro',
         'claude-3-5-sonnet', 'claude-3-haiku'
@@ -69,6 +70,8 @@ class LLMConfig:
     
     # Model descriptions for UI
     model_descriptions: Dict[str, str] = field(default_factory=lambda: _parse_json_env('LLM_MODEL_DESCRIPTIONS', {
+        'gpt-5': 'Latest flagship OpenAI model',
+        'gpt-5-mini': 'Smaller, cost-efficient GPT-5 family model',
         'gpt-4o-mini': 'Fast, cost-effective for most analyses',
         'gpt-4o': 'Most capable OpenAI model',
         'gpt-4-turbo': 'High performance with large context',
@@ -417,7 +420,7 @@ LLM_DEFAULT_MAX_TOKENS=0
 LLM_DEFAULT_TIMEOUT=60
 
 # Available models (comma-separated)
-LLM_AVAILABLE_MODELS=gpt-4o-mini,gpt-4o,gpt-4-turbo,gpt-3.5-turbo,gemini-2.0-flash,gemini-2.0-flash-lite,gemini-1.5-pro,claude-3-5-sonnet,claude-3-haiku
+LLM_AVAILABLE_MODELS=gpt-5,gpt-5-mini,gpt-4o-mini,gpt-4o,gpt-4-turbo,gpt-3.5-turbo,gemini-2.0-flash,gemini-2.0-flash-lite,gemini-1.5-pro,claude-3-5-sonnet,claude-3-haiku
 
 # Model costs (JSON format, per 1K tokens)
 # LLM_MODEL_COSTS={"gpt-4o-mini": 0.00015, "gpt-4o": 0.005, "gemini-2.0-flash": 0.0001}

@@ -96,7 +96,9 @@ class ContentService:
                 "youtube_url": youtube_url,
                 "transcript": transcript_text,
                 "current_datetime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "video_title": video_title
+                "video_title": video_title,
+                # Always provide this so task templates with {custom_instruction} don't fail
+                "custom_instruction": ""
             }
             
             # Add classification results if available
@@ -110,17 +112,28 @@ class ContentService:
             if custom_instruction:
                 crew_inputs["custom_instruction"] = f"\n\n**CUSTOM HUMAN INSTRUCTION (HIGH IMPORTANCE):**\n{custom_instruction}"
             
-            # Create a mini crew with just the required task
-            # First, always include summary task for context
-            tasks = [crew.classify_and_summarize_content()]
-            
-            # Add the specific task we want
+            # Create a minimal crew tailored to the requested single content type
+            # Avoid running the full pipeline to reduce cost and latency
+            tasks = []
+            has_classification = bool(
+                analysis_result 
+                and "classify_and_summarize_content" in analysis_result.task_outputs 
+                and getattr(analysis_result, "category", None) is not None 
+                and getattr(analysis_result, "context_tag", None) is not None
+            )
+
             if content_type == "analyze_and_plan_content":
-                tasks.append(crew.analyze_and_plan_content())
+                # Only run the action-plan task
+                tasks = [crew.analyze_and_plan_content()]
             elif content_type in ["write_blog_post", "write_linkedin_post", "write_tweet"]:
-                # These tasks need context from both summary and action plan
-                tasks.append(crew.analyze_and_plan_content())
+                # For tweets, classification improves style selection; include it only if missing
+                if content_type == "write_tweet" and not has_classification:
+                    tasks.append(crew.classify_and_summarize_content())
+                # Directly run the requested writer task
                 tasks.append(task_method())
+            else:
+                # Fallback: run only the requested task
+                tasks = [task_method()]
             
             # Create and execute the crew
             from crewai import Crew, Process

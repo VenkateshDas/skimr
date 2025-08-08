@@ -267,7 +267,7 @@ Current Settings:
             elif choice == "model":
                 model = Prompt.ask(
                     "Select Model",
-                    choices=["gpt-4o-mini", "gemini-2.0-flash", "gemini-2.0-flash-lite"],
+                    choices=["gpt-5", "gpt-5-mini", "gpt-4o-mini", "gemini-2.0-flash", "gemini-2.0-flash-lite"],
                     default=self.session.settings['model']
                 ) if RICH_AVAILABLE else input(f"Model ({self.session.settings['model']}): ") or self.session.settings['model']
                 self.session.update_settings(model=model)
@@ -855,7 +855,7 @@ def setup_argument_parser():
     
     parser.add_argument(
         "--model",
-        choices=["gpt-4o-mini", "gemini-2.0-flash", "gemini-2.0-flash-lite"],
+        choices=["gpt-5", "gpt-5-mini", "gpt-4o-mini", "gemini-2.0-flash", "gemini-2.0-flash-lite"],
         default="gpt-4o-mini",
         help="AI model to use (default: gpt-4o-mini)"
     )

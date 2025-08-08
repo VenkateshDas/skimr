@@ -138,8 +138,8 @@ The core application package organized in clean architecture layers.
 - **`cache_utils.py`** - Caching helper functions
 - **`chat_utils.py`** - Chat processing utilities
 - **`logging.py`** - Centralized logging configuration
-- **`transcript_utils.py`** - Transcript processing helpers
-- **`video_highlights.py`** - Video highlight extraction
+- (deprecated) `transcript_utils.py` - removed, use core YouTube client/repositories
+- (deprecated) `video_highlights.py` - removed to reduce scope
 - **`youtube_utils.py`** - YouTube URL validation and processing
 
 **When to modify**:
@@ -148,16 +148,9 @@ The core application package organized in clean architecture layers.
 - ✅ Adding data validation helpers
 - ✅ Optimizing common operations
 
-#### 🛠️ **Tools** (`tools/`)
+#### 🛠️ **Tools**
 
-**Purpose**: External tools and integrations for AI agents.
-
-- **`youtube_tools.py`** - YouTube-specific tools for AI agents
-
-**When to modify**:
-- ✅ Adding new AI tools
-- ✅ Integrating external APIs
-- ✅ Adding specialized processing tools
+Removed to keep the codebase lean.
 
 #### 🔌 **Adapters** (`adapters/`)
 
