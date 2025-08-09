@@ -9,7 +9,6 @@ from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import Tool
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage, BaseMessage
 from langgraph.prebuilt import create_react_agent
 from langchain.schema import Document
 from langchain_tavily import TavilySearch
@@ -107,38 +106,64 @@ def create_vectorstore(text: str, transcript_list: Optional[List[Dict[str, Any]]
             chunks.append(current_chunk)
             metadata_list.append(current_chunk_metadata)
         
-        # Create embeddings
-        embeddings = OpenAIEmbeddings()
-        
-        # Create a FAISS vector store with metadata
-        texts_with_metadata = [
-            {"content": chunk, "metadata": metadata}
+        # Create embeddings (smaller batch size, explicit model configurable via env)
+        embeddings = OpenAIEmbeddings(
+            model=os.environ.get("EMBEDDING_MODEL", "text-embedding-3-small"),
+        )
+
+        # Prepare documents
+        documents = [
+            Document(page_content=chunk, metadata=metadata)
             for chunk, metadata in zip(chunks, metadata_list)
         ]
-        
-        vectorstore = FAISS.from_documents(
-            documents=[
-                Document(page_content=item["content"], metadata=item["metadata"])
-                for item in texts_with_metadata
-            ],
-            embedding=embeddings
-        )
-        
-        logger.info(f"Created FAISS vector store with {len(chunks)} chunks (with timestamps)")
+
+        # Build FAISS index in small batches to respect API token limits
+        def batched(seq, n):
+            for i in range(0, len(seq), n):
+                yield seq[i:i + n]
+
+        vectorstore: Optional[FAISS] = None
+        batch_size = 64
+        total = len(documents)
+        created = 0
+        for idx, batch_docs in enumerate(batched(documents, batch_size), start=1):
+            if vectorstore is None:
+                vectorstore = FAISS.from_documents(batch_docs, embedding=embeddings)
+            else:
+                vectorstore.add_documents(batch_docs)
+            created += len(batch_docs)
+            logger.info(f"Indexed {created}/{total} chunks (with timestamps) into FAISS")
+
+        assert vectorstore is not None
+        logger.info(f"Created FAISS vector store with {total} chunks (with timestamps)")
     else:
         # Process regular transcript without timestamps
         chunks = text_splitter.split_text(text)
         
-        # Create embeddings
-        embeddings = OpenAIEmbeddings()
-        
-        # Create a FAISS vector store (in-memory)
-        vectorstore = FAISS.from_texts(
-            texts=chunks,
-            embedding=embeddings
+        # Create embeddings (smaller batch size, explicit model configurable via env)
+        embeddings = OpenAIEmbeddings(
+            model=os.environ.get("EMBEDDING_MODEL", "text-embedding-3-small"),
         )
-        
-        logger.info(f"Created FAISS vector store with {len(chunks)} chunks")
+
+        # Build FAISS index in small batches to respect API token limits
+        def batched(seq, n):
+            for i in range(0, len(seq), n):
+                yield seq[i:i + n]
+
+        vectorstore: Optional[FAISS] = None
+        batch_size = 64
+        total = len(chunks)
+        created = 0
+        for idx, batch_texts in enumerate(batched(chunks, batch_size), start=1):
+            if vectorstore is None:
+                vectorstore = FAISS.from_texts(texts=batch_texts, embedding=embeddings)
+            else:
+                vectorstore.add_texts(batch_texts)
+            created += len(batch_texts)
+            logger.info(f"Indexed {created}/{total} chunks into FAISS")
+
+        assert vectorstore is not None
+        logger.info(f"Created FAISS vector store with {total} chunks")
     
     return vectorstore
 
@@ -188,16 +213,54 @@ def get_or_create_vectorstore(
     Retrieve an existing FAISS index for the video or create a new one by
     chunking the transcript and embedding the chunks.
     """
+    # Try load first
     existing = load_vectorstore(video_id)
     if existing is not None:
         return existing
 
-    logger.info(
-        f"No existing FAISS index for {video_id}. Creating a new index from transcript (len={len(text)})."
-    )
-    vs = create_vectorstore(text, transcript_list)
-    save_vectorstore(video_id, vs)
-    return vs
+    # Ensure base directory exists
+    os.makedirs(VECTORSTORE_DIR, exist_ok=True)
+
+    # Simple file lock to avoid concurrent builds
+    lock_path = os.path.join(VECTORSTORE_DIR, f"{video_id}.lock")
+
+    # If another process is building, wait briefly for it to finish and try load again
+    wait_seconds = 0
+    while os.path.exists(lock_path) and wait_seconds < 300:
+        time.sleep(1)
+        wait_seconds += 1
+        existing = load_vectorstore(video_id)
+        if existing is not None:
+            return existing
+
+    # Acquire lock
+    lock_acquired = False
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+        lock_acquired = True
+    except FileExistsError:
+        # Race condition: someone else just started; wait a bit more and try load
+        for _ in range(30):
+            time.sleep(1)
+            existing = load_vectorstore(video_id)
+            if existing is not None:
+                return existing
+        # Fall through and attempt build anyway as a last resort
+
+    try:
+        logger.info(
+            f"No existing FAISS index for {video_id}. Creating a new index from transcript (len={len(text)})."
+        )
+        vs = create_vectorstore(text, transcript_list)
+        save_vectorstore(video_id, vs)
+        return vs
+    finally:
+        if lock_acquired and os.path.exists(lock_path):
+            try:
+                os.remove(lock_path)
+            except Exception:
+                pass
 
 def create_agent_graph(vectorstore: FAISS, video_metadata: Dict[str, Any], has_timestamps: bool = False):
     """
@@ -245,7 +308,7 @@ def create_agent_graph(vectorstore: FAISS, video_metadata: Dict[str, Any], has_t
     )
     
     # Create retriever tool
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 25})
     
     # Define a wrapper function for the retriever to log the results
     def search_with_logging(query):
