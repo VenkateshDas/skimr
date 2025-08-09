@@ -33,6 +33,12 @@ llm_manager = LLMManager()
 cache_manager = CacheManager()
 youtube_client = YouTubeClient(cache_manager)
 
+# Base directory to persist vector stores (can be overridden via env)
+VECTORSTORE_DIR = os.environ.get(
+    "VECTORSTORE_DIR",
+    os.path.join(os.getcwd(), "analysis_cache", "vectorstores")
+)
+
 def create_vectorstore(text: str, transcript_list: Optional[List[Dict[str, Any]]] = None) -> FAISS:
     """
     Create a vector store from the text.
@@ -135,6 +141,63 @@ def create_vectorstore(text: str, transcript_list: Optional[List[Dict[str, Any]]
         logger.info(f"Created FAISS vector store with {len(chunks)} chunks")
     
     return vectorstore
+
+
+def _get_vectorstore_path(video_id: str) -> str:
+    """Return the filesystem path for a video's FAISS index."""
+    return os.path.join(VECTORSTORE_DIR, video_id)
+
+
+def load_vectorstore(video_id: str) -> Optional[FAISS]:
+    """
+    Load a persisted FAISS vector store for the given video if available.
+    Returns None if not found or load fails.
+    """
+    try:
+        path = _get_vectorstore_path(video_id)
+        if not os.path.isdir(path):
+            return None
+        # Embeddings object is required for load
+        embeddings = OpenAIEmbeddings()
+        # allow_dangerous_deserialization needed for newer LC versions loading legacy indexes
+        vs = FAISS.load_local(path, embeddings, allow_dangerous_deserialization=True)
+        logger.info(f"Loaded persisted FAISS index from {path}")
+        return vs
+    except Exception as e:
+        logger.warning(f"Could not load FAISS index for {video_id}: {e}")
+        return None
+
+
+def save_vectorstore(video_id: str, vectorstore: FAISS) -> None:
+    """Persist a FAISS vector store to disk for future reuse."""
+    try:
+        path = _get_vectorstore_path(video_id)
+        os.makedirs(path, exist_ok=True)
+        vectorstore.save_local(path)
+        logger.info(f"Saved FAISS index to {path}")
+    except Exception as e:
+        logger.warning(f"Failed to save FAISS index for {video_id}: {e}")
+
+
+def get_or_create_vectorstore(
+    video_id: str,
+    text: str,
+    transcript_list: Optional[List[Dict[str, Any]]] = None,
+) -> FAISS:
+    """
+    Retrieve an existing FAISS index for the video or create a new one by
+    chunking the transcript and embedding the chunks.
+    """
+    existing = load_vectorstore(video_id)
+    if existing is not None:
+        return existing
+
+    logger.info(
+        f"No existing FAISS index for {video_id}. Creating a new index from transcript (len={len(text)})."
+    )
+    vs = create_vectorstore(text, transcript_list)
+    save_vectorstore(video_id, vs)
+    return vs
 
 def create_agent_graph(vectorstore: FAISS, video_metadata: Dict[str, Any], has_timestamps: bool = False):
     """
@@ -373,13 +436,17 @@ async def setup_chat_for_video_async(youtube_url: str, transcript: str, transcri
             }
             logger.info(f"Using default video info for chat with {video_id}")
         
-        # Create vector store from the provided transcript
-        logger.info(f"Creating vector store from the provided transcript (has timestamps: {has_timestamps})")
+        # Create or load vector store from the provided transcript
+        logger.info(
+            f"Preparing vector store from transcript (has timestamps: {has_timestamps}). Will load existing index if available."
+        )
         try:
-            vectorstore = create_vectorstore(transcript, transcript_list)
-            logger.info(f"Successfully created vector store for chat (with timestamps: {has_timestamps})")
+            vectorstore = get_or_create_vectorstore(video_id, transcript, transcript_list)
+            logger.info(
+                f"Vector store ready for chat (with timestamps: {has_timestamps})."
+            )
         except Exception as e:
-            logger.error(f"Error creating vector store: {str(e)}")
+            logger.error(f"Error preparing vector store: {str(e)}")
             return None
         
         # Create video metadata
