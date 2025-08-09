@@ -4,12 +4,13 @@ fastapi==0.115.12
 langchain==0.3.25
 langchain_anthropic==0.3.14
 langchain_community==0.3.24
-langchain_core==0.3.63
+langchain_core==0.3.74
 langchain_google_genai==2.1.5
 langchain_openai==0.3.18
 langchain_tavily==0.2.0
 langchain_text_splitters==0.3.8
-langgraph==0.4.7
+langgraph==0.6.4
+langgraph-prebuilt==0.6.4
 Markdown==3.8
 moviepy==1.0.3
 numpy==2.2.6
@@ -18,7 +19,8 @@ pydantic==2.11.5
 python-dotenv==1.1.0
 pytube==15.0.0
 reportlab==4.4.1
-Requests==2.32.3
+requests==2.32.3
+langsmith==0.3.45
 streamlit==1.44.1
 supabase==2.15.2
 youtube_transcript_api==1.0.3
@@ -32,3 +34,6 @@ pydub
 pysubs2
 ffmpeg-python
 streamlit-cookies-manager
+openai>=1.30.0
+rich>=13.7.0
+certifi>=2024.2.2

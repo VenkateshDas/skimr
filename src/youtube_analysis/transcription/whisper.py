@@ -230,37 +230,99 @@ class WhisperTranscriber(BaseTranscriber):
     async def _download_audio(self, video_id: str):
         url = f"https://www.youtube.com/watch?v={video_id}"
         with tempfile.TemporaryDirectory() as tmpdir:
-            ytdlp_opts = {
-                "format": self._AUDIO_FMT,
+            # Base options
+            base_opts = {
+                "format": f"{self._AUDIO_FMT}/{self._AUDIO_FMT_FALLBACK}",
                 "quiet": True,
+                "noprogress": True,
                 "outtmpl": f"{tmpdir}/%(id)s.%(ext)s",
                 "noplaylist": True,
                 "ignoreerrors": False,
+                "retries": 3,
+                "socket_timeout": 15,
+                "sleep_requests": 0.5,
+                "max_sleep_requests": 2,
+                "geo_bypass": True,
             }
-            
+
             # Configure SSL settings
             ssl_config = get_ssl_config()
-            ytdlp_opts = ssl_config.configure_yt_dlp_options(ytdlp_opts)
-            
+            base_opts = ssl_config.configure_yt_dlp_options(base_opts)
+
+            # Try multiple player clients and user agents to bypass SABR/app restrictions
+            attempts = [
+                # Prefer web clients first to avoid GVS PO token requirements
+                {
+                    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                    "player_client": ["web"],
+                },
+                {
+                    "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+                    "player_client": ["web_safari"],
+                },
+                {
+                    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                    "player_client": ["web_embedded"],
+                },
+                {
+                    "ua": "Mozilla/5.0 (CrKey armv7l 1.36.159268) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/36.0.1985.67 Safari/537.36",
+                    "player_client": ["tv_embedded"],
+                },
+                {
+                    "ua": "Mozilla/5.0 (Chromium OS 14541.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.114 Safari/537.36",
+                    "player_client": ["tv"],
+                },
+                {
+                    "ua": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+                    "player_client": ["ios"],
+                },
+                # Keep android attempts last; often require PO token
+                {
+                    "ua": "Mozilla/5.0 (Linux; Android 12; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+                    "player_client": ["android_embedded"],
+                },
+            ]
+
             loop = asyncio.get_running_loop()
-            # If SSL is disabled, try Piped API to avoid yt-dlp metadata SSL
-            if not getattr(ssl_config, 'verify_ssl', True):
+            last_error: Optional[Exception] = None
+            for attempt in attempts:
+                ytdlp_opts = dict(base_opts)
+                # Ensure hostile extractor_args are removed
+                extractor_args = ytdlp_opts.get("extractor_args") or {}
+                yt_args = extractor_args.get("youtube") or {}
+                yt_args.pop("player_skip", None)  # allow js signature
+                yt_args.pop("skip", None)          # don't skip dash/hls
+                yt_args["player_client"] = attempt["player_client"]
+                extractor_args["youtube"] = yt_args
+                ytdlp_opts["extractor_args"] = extractor_args
+                # Set UA
+                headers = ytdlp_opts.get("http_headers") or {}
+                headers["User-Agent"] = attempt["ua"]
+                headers.setdefault("Referer", "https://www.youtube.com/")
+                headers.setdefault("Accept-Language", os.environ.get("YTDLP_ACCEPT_LANGUAGE", "en-US,en;q=0.9"))
+                ytdlp_opts["http_headers"] = headers
+
+                try:
+                    logger.debug("Attempting yt-dlp audio download with player_client=%s", attempt["player_client"]) 
+                    # Hard timeout per attempt to avoid getting stuck
+                    await asyncio.wait_for(
+                        loop.run_in_executor(None, yt_dlp.YoutubeDL(ytdlp_opts).download, [url]),
+                        timeout=25,
+                    )
+                    last_error = None
+                    break
+                except Exception as e:
+                    last_error = e
+                    continue
+
+            if last_error:
+                # As a last resort, always try Piped (independent of SSL verify)
                 try:
                     await loop.run_in_executor(None, self._download_audio_via_piped, video_id, tmpdir)
-                except Exception as e:
-                    raise TranscriptUnavailable(f"Failed to download audio via Piped: {e}") from e
-            else:
-                try:
-                    logger.debug("Attempting to download audio with format: %s", self._AUDIO_FMT)
-                    await loop.run_in_executor(None, yt_dlp.YoutubeDL(ytdlp_opts).download, [url])
-                except Exception:
-                    logger.warning("Failed to download with primary format: %s. Trying fallback format: %s", 
-                                   self._AUDIO_FMT, self._AUDIO_FMT_FALLBACK)
-                    ytdlp_opts["format"] = self._AUDIO_FMT_FALLBACK
-                    try:
-                        await loop.run_in_executor(None, yt_dlp.YoutubeDL(ytdlp_opts).download, [url])
-                    except Exception as fallback_e:
-                        raise TranscriptUnavailable(f"Failed to download audio: {str(fallback_e)}") from fallback_e
+                except Exception as piped_e:
+                    raise TranscriptUnavailable(
+                        f"Failed to download audio with yt-dlp and Piped. yt-dlp error: {last_error}; Piped error: {piped_e}"
+                    ) from piped_e
             
             # locate downloaded file
             audio_files = list(Path(tmpdir).glob(f"{video_id}.*"))
@@ -269,35 +331,65 @@ class WhisperTranscriber(BaseTranscriber):
             yield audio_files[0]
 
     def _download_audio_via_piped(self, video_id: str, tmpdir: str) -> None:
-        base = os.environ.get("PIPED_BASE_URL", "https://piped.video")
-        streams_url = f"{base}/api/v1/streams/{video_id}"
+        # Try multiple public Piped instances
+        candidates = [
+            os.environ.get("PIPED_BASE_URL"),
+            "https://piped.video",
+            "https://piped.projectsegfau.lt",
+            "https://piped.in.projectsegfau.lt",
+            "https://watch.leptons.xyz",
+            "https://piped.privacydev.net",
+            "https://piped.mha.fi",
+        ]
+        candidates = [c for c in candidates if c]
+
+        last_exc = None
         session = requests.Session()
         get_ssl_config().configure_requests_session(session)
-        resp = session.get(streams_url, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
-        audio_streams = data.get("audioStreams") or []
-        if not audio_streams:
-            raise RuntimeError("No audio streams listed by Piped")
-        preferred = None
-        for s in audio_streams:
-            mime = (s.get("mimeType") or "").lower()
-            if "mp4" in mime or "m4a" in mime:
-                preferred = s
-                break
-        if preferred is None:
-            preferred = audio_streams[0]
-        stream_url = preferred.get("url")
-        if not stream_url:
-            raise RuntimeError("Audio stream missing URL")
-        ext = "m4a" if "mp4" in (preferred.get("mimeType") or "").lower() else "webm"
-        out_path = Path(tmpdir) / f"{video_id}.{ext}"
-        with session.get(stream_url, stream=True, timeout=60) as r:
-            r.raise_for_status()
-            with open(out_path, "wb") as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
+        for base in candidates:
+            try:
+                streams_url = f"{base}/api/v1/streams/{video_id}"
+                resp = session.get(streams_url, timeout=20)
+                resp.raise_for_status()
+                try:
+                    data = resp.json()
+                except Exception as e:
+                    # Not JSON, try next instance
+                    last_exc = RuntimeError(
+                        f"Piped returned non-JSON (status {resp.status_code}) from {streams_url}: {(resp.text or '').strip()[:200]}"
+                    )
+                    continue
+                audio_streams = data.get("audioStreams") or []
+                if not audio_streams:
+                    last_exc = RuntimeError("No audio streams listed by Piped")
+                    continue
+                preferred = None
+                for s in audio_streams:
+                    mime = (s.get("mimeType") or "").lower()
+                    if "mp4" in mime or "m4a" in mime:
+                        preferred = s
+                        break
+                if preferred is None:
+                    preferred = audio_streams[0]
+                stream_url = preferred.get("url")
+                if not stream_url:
+                    last_exc = RuntimeError("Audio stream missing URL")
+                    continue
+                ext = "m4a" if "mp4" in (preferred.get("mimeType") or "").lower() else "webm"
+                out_path = Path(tmpdir) / f"{video_id}.{ext}"
+                with session.get(stream_url, stream=True, timeout=90) as r:
+                    r.raise_for_status()
+                    with open(out_path, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                return
+            except Exception as e:
+                last_exc = e
+                continue
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("All Piped instances failed without an explicit error")
 
     async def _convert_to_mp3(self, input_path: Path) -> Optional[Path]:
         """Convert the input file to MP3 format using FFmpeg."""

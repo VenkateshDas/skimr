@@ -51,69 +51,52 @@ def display_analysis_results(
     ]
     
     # Create tabs
-    tabs = st.tabs([tab[0] for tab in tab_config])
-    
-    # Display content in each tab
+    tab_labels = [tab[0] for tab in tab_config]
+    tabs = st.tabs(tab_labels)
+
     for idx, (tab_name, task_key, content_type) in enumerate(tab_config):
         with tabs[idx]:
             if content_type == "transcript":
                 _display_transcript_tab(analysis_results, session_manager)
             elif content_type == "highlights":
-                # Highlights disabled - keeping code for future use
-                # _display_highlights_tab(analysis_results, session_manager)
                 st.info("Video highlights feature is temporarily disabled.")
             else:
-                # Regular content tabs
                 content = task_outputs.get(task_key)
                 if content:
-                    # Handle both string content and TaskOutput objects
                     if isinstance(content, dict) and "content" in content:
-                        # It's a TaskOutput dictionary
                         actual_content = content["content"]
                     elif isinstance(content, str):
-                        # It's raw string content
                         actual_content = content
                     else:
-                        # Try to extract content from object
                         actual_content = getattr(content, 'content', str(content))
-                    
+
                     _display_content_with_copy(actual_content, content_type)
-                    
-                    # Disable regenerate for Summary tab
+
                     if task_key != "classify_and_summarize_content":
-                        # Add custom instruction field for regeneration
                         st.markdown("---")
                         st.markdown("### Regenerate with Custom Instructions")
                         custom_instruction = st.text_area(
                             f"Add custom instructions for regenerating this {tab_name}",
                             key=f"custom_instruction_{task_key}",
-                            placeholder="Example: Focus more on the technical aspects, or Add more actionable steps, etc."
+                            placeholder="Example: Focus more on the technical aspects, or Add more actionable steps, etc.",
                         )
                         if st.button(f"Regenerate {tab_name}", key=f"regen_tab_{task_key}"):
                             if on_demand_handler:
                                 on_demand_handler(task_key)
-                    
+
                 else:
-                    # Content not yet generated
                     if task_key == "classify_and_summarize_content":
-                        # Special handling for summary - it should be the main analysis result
                         st.warning("📊 Analysis summary not available. This might indicate an issue with the analysis process.")
                         st.info("The summary should be automatically generated during video analysis. If you see this message, please try analyzing the video again or contact support.")
-                        
-
                     else:
                         st.info(f"{tab_name} not yet generated.")
-                        
-                        # Add custom instruction field
                         st.markdown("### Custom Instructions")
                         custom_instruction = st.text_area(
                             f"Add custom instructions for this {tab_name}",
                             key=f"custom_instruction_{task_key}",
-                            placeholder="Example: Focus more on the technical aspects, or Add more actionable steps, etc."
+                            placeholder="Example: Focus more on the technical aspects, or Add more actionable steps, etc.",
                         )
-                        
                         if on_demand_handler:
-                            # Pass the backend task_key instead of display name
                             if st.button(f"Generate {tab_name}", key=f"gen_tab_{task_key}"):
                                 on_demand_handler(task_key)
 

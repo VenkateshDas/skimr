@@ -51,22 +51,23 @@ def extract_youtube_thumbnail(video_id: str) -> str:
 
 
 def load_css():
-    """Load custom CSS styles."""
-    st.markdown("""
+    """Load custom CSS styles once per session."""
+    if st.session_state.get("_css_loaded", False):
+        return
+    st.markdown(
+        """
         <style>
-        .stButton button {
-            width: 100%;
-        }
-        .sidebar .stButton button {
-            width: auto;
-        }
-        .st-emotion-cache-16idsys p {
-            font-size: 14px;
-        }
+        .stButton button { width: 100%; }
+        .sidebar .stButton button { width: auto; }
+        .st-emotion-cache-16idsys p { font-size: 14px; }
         </style>
-    """, unsafe_allow_html=True)
+        """,
+        unsafe_allow_html=True,
+    )
+    st.session_state["_css_loaded"] = True
 
 
+@st.cache_data(show_spinner=False)
 def get_skimr_logo_base64() -> Optional[str]:
     """Return the base64-encoded Skimr logo for embedding in HTML.
 

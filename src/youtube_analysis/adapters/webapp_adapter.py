@@ -32,11 +32,17 @@ class WebAppAdapter:
         return validate_youtube_url(url)
     
     def get_video_info(self, url: str) -> Optional[Dict[str, Any]]:
-        """Get video information for preview using repository/client path for consistency."""
+        """Get video information for preview using repository/client path for consistency.
+
+        Cached per-URL to avoid repeated async hops and network calls during reruns.
+        """
+        # Lightweight in-process cache keyed by URL
+        cache_key = f"_video_info_cache::{url}"
+        cached = getattr(self, cache_key, None)
+        if cached is not None:
+            return cached
         try:
-            # Prefer unified repository path so SSL/options are consistent
             youtube_repo = self.service_factory.get_youtube_repository()
-            # The repository exposes async methods; bridge safely from sync context
             async def fetch():
                 info_obj = await youtube_repo._get_video_info(url)  # internal but consistent with repo usage
                 if not info_obj:
@@ -49,17 +55,20 @@ class WebAppAdapter:
                     "youtube_url": url,
                 }
             try:
-                return asyncio.run(fetch())
+                result = asyncio.run(fetch())
             except RuntimeError:
-                # Event loop already running; schedule temporary loop to fetch
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
                     # Cannot block; fall back to lightweight utils path to avoid UI hang
-                    return get_video_info(url)
-                return loop.run_until_complete(fetch())
+                    result = get_video_info(url)
+                else:
+                    result = loop.run_until_complete(fetch())
         except Exception as e:
             logger.error(f"Error getting video info: {e}")
-            return None
+            result = None
+        # Memoize in instance to survive reruns within same session
+        setattr(self, cache_key, result)
+        return result
     
     async def analyze_video(
         self, 

@@ -20,6 +20,8 @@ from typing import Optional, List, Dict, Any, Tuple, Union
 from dataclasses import dataclass, field
 from enum import Enum
 from contextlib import asynccontextmanager
+from pathlib import Path
+import tempfile
 import re
 
 import requests
@@ -53,6 +55,8 @@ from ..models import TranscriptSegment, VideoData, VideoInfo
 from ..utils.logging import get_logger
 from .cache_manager import CacheManager
 from ..utils.ssl_config import get_ssl_config
+import yt_dlp
+import pysubs2
 
 logger = get_logger("transcript_fetcher")
 
@@ -144,6 +148,9 @@ class RobustTranscriptFetcher:
         # Prepare HTTP session for libraries that allow injection (e.g., youtube_transcript_api>=1.0)
         self._http_session = requests.Session()
         self.ssl_config.configure_requests_session(self._http_session)
+        
+        # Configure proxy settings if available
+        self._configure_proxy_settings()
         # Add browser-like headers to avoid empty/blocked responses in some environments (e.g., Railway)
         self._http_session.headers.update({
             "User-Agent": os.getenv(
@@ -191,9 +198,58 @@ class RobustTranscriptFetcher:
         
         logger.info("Initialized RobustTranscriptFetcher")
     
+    def _configure_proxy_settings(self):
+        """Configure proxy settings for YouTube requests if available."""
+        try:
+            # Check for proxy configuration via environment variables
+            http_proxy = os.getenv("YOUTUBE_PROXY_HTTP")
+            https_proxy = os.getenv("YOUTUBE_PROXY_HTTPS")
+            
+            if http_proxy or https_proxy:
+                proxies = {}
+                if http_proxy:
+                    proxies["http"] = http_proxy
+                if https_proxy:
+                    proxies["https"] = https_proxy
+                
+                self._http_session.proxies.update(proxies)
+                logger.info(f"Configured HTTP proxies for YouTube requests: {list(proxies.keys())}")
+                
+            # Check for Webshare proxy configuration (if youtube-transcript-api supports it)
+            webshare_user = os.getenv("WEBSHARE_PROXY_USERNAME")
+            webshare_pass = os.getenv("WEBSHARE_PROXY_PASSWORD")
+            
+            if webshare_user and webshare_pass:
+                # Store for later use with YouTubeTranscriptApi proxy_config
+                self._webshare_config = {
+                    "username": webshare_user,
+                    "password": webshare_pass
+                }
+                logger.info("Webshare proxy credentials configured")
+            else:
+                self._webshare_config = None
+                
+        except Exception as e:
+            logger.warning(f"Failed to configure proxy settings: {e}")
+            self._webshare_config = None
+
     def _get_ytt_api(self) -> Any:
         """Return a configured YouTubeTranscriptApi instance when supported."""
         try:
+            # Try to configure with proxy if Webshare credentials are available
+            if hasattr(self, '_webshare_config') and self._webshare_config:
+                try:
+                    from youtube_transcript_api.proxies import WebshareProxyConfig
+                    proxy_config = WebshareProxyConfig(
+                        proxy_username=self._webshare_config["username"],
+                        proxy_password=self._webshare_config["password"]
+                    )
+                    return YouTubeTranscriptApi(proxy_config=proxy_config)  # type: ignore[call-arg]
+                except ImportError:
+                    logger.debug("Webshare proxy not available, falling back to HTTP session")
+                except Exception as e:
+                    logger.warning(f"Failed to configure Webshare proxy: {e}")
+            
             # Newer API supports passing an HTTP session
             return YouTubeTranscriptApi(http_client=self._http_session)  # type: ignore[call-arg]
         except TypeError:
@@ -291,15 +347,34 @@ class RobustTranscriptFetcher:
         languages_to_try = self._build_language_strategy(preferred_language)
         
         # Define fetching strategies in order of preference
+        # 1) Try manual subtitles via yt-dlp
+        # 2) Try auto-generated subtitles via yt-dlp (preferred languages, then any)
+        # 3) Fallback to Whisper transcription (order optimized by video duration)
         strategies = [
-            (TranscriptSource.YOUTUBE_API, self._fetch_youtube_transcript),
+            (TranscriptSource.MANUAL_CAPTIONS, self._fetch_manual_captions_ytdlp),
+            (TranscriptSource.AUTO_GENERATED, self._fetch_auto_captions_ytdlp),
         ]
         
         if fallback_to_whisper:
-            strategies.extend([
-                (TranscriptSource.WHISPER_OPENAI, self._fetch_whisper_transcript_openai),
-                (TranscriptSource.WHISPER_GROQ, self._fetch_whisper_transcript_groq),
-            ])
+            # Optimize whisper provider order based on video duration and available API keys
+            video_duration = 0
+            try:
+                info = self._ytdlp_probe_info(youtube_url)
+                video_duration = int(info.get('duration') or 0)
+            except Exception:
+                video_duration = 0
+            groq_key = os.environ.get("GROQ_API_KEY")
+            if video_duration and video_duration >= 45 * 60 and groq_key:
+                # Prefer Groq first for long videos (often faster)
+                strategies.extend([
+                    (TranscriptSource.WHISPER_GROQ, self._fetch_whisper_transcript_groq),
+                    (TranscriptSource.WHISPER_OPENAI, self._fetch_whisper_transcript_openai),
+                ])
+            else:
+                strategies.extend([
+                    (TranscriptSource.WHISPER_OPENAI, self._fetch_whisper_transcript_openai),
+                    (TranscriptSource.WHISPER_GROQ, self._fetch_whisper_transcript_groq),
+                ])
         
         # Try each strategy
         last_error = None
@@ -342,6 +417,277 @@ class RobustTranscriptFetcher:
             fetch_time_ms=int((time.time() - start_time) * 1000)
         )
     
+    # ---------- yt-dlp based subtitle helpers ----------
+    def _ytdlp_base_opts(self) -> Dict[str, Any]:
+        return {
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "retries": 10,
+            "socket_timeout": 20,
+            "sleep_requests": 1,
+            "max_sleep_requests": 3,
+        }
+
+    def _ytdlp_probe_info(self, url: str) -> Dict[str, Any]:
+        # Try a clean probe first; if certain app restriction errors appear, retry with forced web client UA
+        opts = self._ytdlp_base_opts()
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                return ydl.extract_info(url, download=False) or {}
+        except Exception as e:
+            msg = str(e)
+            if "not available on this app" in msg.lower() or "requested format is not available" in msg.lower():
+                try:
+                    fallback_opts = self._ytdlp_base_opts() | {
+                        "http_headers": {
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                        },
+                        "extractor_args": {"youtube": {"player_client": ["web"]}},
+                    }
+                    with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                        return ydl.extract_info(url, download=False) or {}
+                except Exception as e2:
+                    raise TranscriptTemporaryError(f"yt-dlp probe failed: {e2}")
+            raise TranscriptTemporaryError(f"yt-dlp probe failed: {e}")
+
+    def _pick_english_auto_keys(self, auto_dict: Dict[str, Any]) -> List[str]:
+        keys = list(auto_dict.keys()) if auto_dict else []
+        priority = ["en", "en-US", "en-GB", "en-IN", "en-CA", "en-AU"]
+        picked = [k for k in priority if k in keys]
+        if not picked:
+            picked = [k for k in keys if k.lower() == "en" or k.lower().startswith("en-")]
+        return picked[:2]
+
+    def _list_subtitle_files(self, directory: Path) -> List[Path]:
+        return sorted(list(directory.glob("*.srt")) + list(directory.glob("*.vtt")))
+
+    def _parse_subtitle_file(self, path: Path) -> List[Dict[str, Any]]:
+        try:
+            subs = pysubs2.load(str(path))
+        except Exception as e:
+            raise TranscriptTemporaryError(f"Failed to parse subtitle file {path.name}: {e}")
+        segments: List[Dict[str, Any]] = []
+        for ev in subs:
+            try:
+                start = max(0.0, float(ev.start) / 1000.0)
+                end = max(start, float(ev.end) / 1000.0)
+                duration = max(0.0, end - start)
+                text = (ev.text or "").replace("\n", " ").replace("\r", " ").strip()
+                if text:
+                    segments.append({"text": text, "start": start, "duration": duration})
+            except Exception:
+                continue
+        # Ensure monotonic ordering
+        segments.sort(key=lambda s: s["start"])
+        return segments
+
+    def _infer_lang_from_filename(self, video_id: str, file_path: Path) -> Optional[str]:
+        # Expected patterns: <id>.<lang>.srt or <id>.<lang>.vtt
+        stem_parts = file_path.name.split(".")
+        # Examples: [<id>, <lang>, srt]
+        if len(stem_parts) >= 3 and stem_parts[0] == video_id:
+            return stem_parts[-2]
+        return None
+
+    async def _download_captions(self, *, url: str, langs: List[str], include_auto: bool, out_dir: Path) -> List[Path]:
+        if not langs:
+            return []
+        # Try languages sequentially to know which file corresponds to which language
+        created_all: List[Path] = []
+        loop = asyncio.get_event_loop()
+        for lang in langs:
+            opts = self._ytdlp_base_opts() | {
+                "skip_download": True,
+                "writesubtitles": True,
+                "writeautomaticsub": include_auto,
+                "subtitleslangs": [lang],
+                # Let yt-dlp output vtt or srt; we parse both
+                # "convertsubtitles": "srt",
+                "outtmpl": str(out_dir / "%(id)s.%(ext)s"),
+            }
+            # Do NOT apply aggressive SSL bypass here; it may skip subtitles in extractor args
+            before = set(self._list_subtitle_files(out_dir))
+            try:
+                await loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(opts).download([url]))
+            except Exception as e:
+                # Try a targeted fallback with forced web client
+                msg = str(e)
+                if "not available on this app" in msg.lower() or "requested format is not available" in msg.lower():
+                    try:
+                        fallback_opts = opts | {
+                            "http_headers": {
+                                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                            },
+                            "extractor_args": {"youtube": {"player_client": ["web"]}},
+                        }
+                        await loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(fallback_opts).download([url]))
+                    except Exception:
+                        continue
+                else:
+                    continue
+            after = set(self._list_subtitle_files(out_dir))
+            created = sorted(list(after - before))
+            created_all.extend(created)
+            # If we created at least one file for this language, stop early
+            if created:
+                break
+        return created_all
+
+    async def _fetch_manual_captions_ytdlp(
+        self,
+        video_id: str,
+        youtube_url: str,
+        languages: List[str],
+        source: TranscriptSource,
+    ) -> TranscriptResult:
+        """Try downloading manually created subtitles using yt-dlp.
+
+        If available, parse the first preferred language match, else any manual track.
+        """
+        # Try probing for manual subtitles
+        manual: Dict[str, Any] = {}
+        video_lang: str = ""
+        try:
+            info = self._ytdlp_probe_info(youtube_url)
+            manual = info.get("subtitles") or {}
+            video_lang = (info.get("audio_language") or info.get("language") or info.get("original_language") or "").lower()
+        except TranscriptTemporaryError:
+            manual = {}
+            video_lang = ""
+
+        # Build attempt list prioritizing the video's language first
+        manual_lang_keys = list(manual.keys())
+        # Preferred languages that are actually available
+        preferred_langs_available = [lang for lang in (languages or []) if lang in manual_lang_keys]
+        attempt_langs: List[str] = []
+        if video_lang and video_lang in manual_lang_keys:
+            attempt_langs.append(video_lang)
+        for lang in preferred_langs_available:
+            if lang not in attempt_langs:
+                attempt_langs.append(lang)
+        # Add any remaining manual languages
+        for lang in manual_lang_keys:
+            if lang not in attempt_langs:
+                attempt_langs.append(lang)
+        # If we couldn't probe languages, fall back to a sane default priority (video language first if known)
+        if not attempt_langs:
+            attempt_langs = [l for l in [video_lang, "en", "en-US", "en-GB", "ta", "de", "es", "fr"] if l]
+
+        # Download the advertised manual subtitles, trying languages in order.
+        # If we had no language list, try downloading all manual subtitles.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_dir = Path(tmpdir)
+            created_files: List[Path] = []
+            if attempt_langs:
+                created_files = await self._download_captions(
+                    url=youtube_url, langs=attempt_langs, include_auto=False, out_dir=out_dir
+                )
+            if not created_files:
+                # As a last resort for manual subs, request all subtitles at once
+                loop = asyncio.get_event_loop()
+                opts = self._ytdlp_base_opts() | {
+                    "skip_download": True,
+                    "writesubtitles": True,
+                    "allsubtitles": True,
+                    "outtmpl": str(out_dir / "%(id)s.%(ext)s"),
+                }
+                try:
+                    await loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(opts).download([youtube_url]))
+                except Exception:
+                    pass
+                created_files = self._list_subtitle_files(out_dir)
+            if not created_files:
+                raise TranscriptUnavailableError("Manual subtitles download yielded no files")
+
+            # Choose the first created file (we attempted languages in order)
+            chosen_file: Path = created_files[0]
+            # Best-effort language detection
+            chosen_lang = None
+            # Try to infer from filename or based on attempted order
+            inferred = self._infer_lang_from_filename(video_id, chosen_file)
+            if inferred:
+                chosen_lang = inferred
+            elif attempt_langs:
+                chosen_lang = attempt_langs[0]
+
+            segments = self._parse_subtitle_file(chosen_file)
+            if not segments:
+                raise TranscriptUnavailableError("Parsed manual subtitles were empty")
+            transcript_text = " ".join(seg["text"] for seg in segments)
+            return TranscriptResult(
+                success=True,
+                transcript=transcript_text,
+                segments=segments,
+                source=TranscriptSource.MANUAL_CAPTIONS,
+                language=chosen_lang or self._detect_transcript_language(transcript_text) or (preferred_langs[0] if preferred_langs else None),
+            )
+
+    async def _fetch_auto_captions_ytdlp(
+        self,
+        video_id: str,
+        youtube_url: str,
+        languages: List[str],
+        source: TranscriptSource,
+    ) -> TranscriptResult:
+        """Try auto-generated subtitles across languages via yt-dlp.
+
+        - Prefer preferred languages; else try video language; else any available (limited count)
+        - If probe fails, try common variants
+        """
+        video_lang = ""
+        auto: Dict[str, Any] = {}
+        try:
+            info = self._ytdlp_probe_info(youtube_url)
+            video_lang = (info.get("audio_language") or info.get("language") or info.get("original_language") or "").lower()
+            auto = info.get("automatic_captions") or {}
+        except TranscriptTemporaryError:
+            video_lang = ""
+            auto = {}
+
+        preferred_langs = list(dict.fromkeys(languages or ["en"]))
+        available_auto_langs = list(auto.keys()) if auto else []
+
+        attempt_langs: List[str] = []
+        # Prioritize the video's language first if it exists among auto captions
+        if video_lang and video_lang in available_auto_langs:
+            attempt_langs.append(video_lang)
+        # Then preferred languages present in available auto
+        for lang in preferred_langs:
+            if lang in available_auto_langs and lang not in attempt_langs:
+                attempt_langs.append(lang)
+        for lang in available_auto_langs:
+            if lang not in attempt_langs:
+                attempt_langs.append(lang)
+            if len(attempt_langs) >= 5:
+                break
+        if not attempt_langs:
+            # Blind attempts if we couldn't list
+            attempt_langs = [l for l in [video_lang, "en", "en-US"] if l]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_dir = Path(tmpdir)
+            created_files = await self._download_captions(
+                url=youtube_url, langs=attempt_langs, include_auto=True, out_dir=out_dir
+            )
+            if not created_files:
+                raise TranscriptUnavailableError("Auto-generated subtitles download yielded no files")
+
+            chosen_file: Path = created_files[0]
+            chosen_lang = self._infer_lang_from_filename(video_id, chosen_file) or attempt_langs[0]
+
+            segments = self._parse_subtitle_file(chosen_file)
+            if not segments:
+                raise TranscriptUnavailableError("Parsed auto-generated subtitles were empty")
+            transcript_text = " ".join(seg["text"] for seg in segments)
+            return TranscriptResult(
+                success=True,
+                transcript=transcript_text,
+                segments=segments,
+                source=TranscriptSource.AUTO_GENERATED,
+                language=chosen_lang or self._detect_transcript_language(transcript_text),
+            )
+
     async def _fetch_youtube_transcript(
         self, 
         video_id: str, 
@@ -361,7 +707,10 @@ class RobustTranscriptFetcher:
                 api = self._get_ytt_api()
                 direct_languages = preferred_targets or ['en']
                 if hasattr(api, 'fetch'):
-                    fetched = api.fetch(video_id, languages=direct_languages)  # type: ignore[call-arg]
+                    fetched = api.fetch(
+                        video_id,
+                        languages=['de','en','es','fr','it','pt','ru','ja','ko','zh','hi','ar','ta']
+                    )  # type: ignore[call-arg]
                     entries = self._normalize_transcript_entries(fetched)
                     if entries:
                         transcript_text = ' '.join([seg['text'] for seg in entries])
@@ -379,21 +728,19 @@ class RobustTranscriptFetcher:
                 # Fall through to list-based strategy
                 pass
 
-            # List available transcripts for the video (support both legacy and new APIs)
+            # List available transcripts for the video (prefer instance API, fall back to legacy static)
             transcript_tracks = None
             try:
-                # Legacy static method (<=0.6.x)
-                if hasattr(YouTubeTranscriptApi, 'list_transcripts'):
-                    transcript_tracks = YouTubeTranscriptApi.list_transcripts(video_id)  # type: ignore[attr-defined]
-                else:
-                    raise AttributeError
-            except Exception:
-                # New API (>=1.0): instance method .list(video_id)
                 api = self._get_ytt_api()
                 if hasattr(api, 'list'):
                     transcript_tracks = api.list(video_id)  # type: ignore[call-arg]
+                elif hasattr(YouTubeTranscriptApi, 'list_transcripts'):
+                    # Legacy static method (<=0.6.x)
+                    transcript_tracks = YouTubeTranscriptApi.list_transcripts(video_id)  # type: ignore[attr-defined]
                 else:
                     transcript_tracks = None
+            except Exception:
+                transcript_tracks = None
 
             # Helper to pick the best matching track
             def select_track() -> Optional[Any]:
