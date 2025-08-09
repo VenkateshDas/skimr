@@ -41,5 +41,12 @@ ENV STREAMLIT_SERVER_PORT=8501
 ENV STREAMLIT_SERVER_HEADLESS=true
 ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
 
+# Docker-specific YouTube API configuration to avoid blocking
+ENV ENVIRONMENT=development
+ENV YOUTUBE_ANALYSIS_DISABLE_SSL_VERIFY=1
+ENV YOUTUBE_HTTP_USER_AGENT="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+ENV YOUTUBE_HTTP_ACCEPT_LANGUAGE="en-US,en;q=0.9"
+ENV PYTHONHTTPSVERIFY=0
+
 # Command to run the application (updated path to reflect refactored structure)
 CMD ["streamlit", "run", "src/youtube_analysis_webapp.py", "--server.port=8501", "--server.address=0.0.0.0"] 

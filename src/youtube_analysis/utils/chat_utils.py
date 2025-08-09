@@ -265,28 +265,13 @@ def create_agent_graph(vectorstore: FAISS, video_metadata: Dict[str, Any], has_t
             return getattr(self.llm, name)
     
     logging_llm = LoggingLLM(llm)
-    
-    # Create the agent using LangGraph's create_react_agent with the correct signature
+
+    # Create the agent using LangGraph's create_react_agent with the current API
     try:
-        # First attempt: Try with llm and tools as positional, prompt as keyword
-        agent_executor = create_react_agent(logging_llm, tools, prompt=prompt)
-        logger.info("Created agent with prompt as keyword argument")
-    except TypeError as e:
-        try:
-            # Second attempt: Try with just llm and tools
-            agent_executor = create_react_agent(logging_llm, tools)
-            logger.info("Created agent without prompt template")
-        except Exception as e:
-            # If that fails too, log the error and try a different approach
-            logger.error(f"Error creating agent with just llm and tools: {str(e)}")
-            # Final attempt: Try with a dictionary of all parameters
-            agent_executor = create_react_agent(
-                llm=logging_llm, 
-                tools=tools,
-            )
-            logger.info("Created agent with named parameters")
+        agent_executor = create_react_agent(logging_llm, tools, prompt=prompt, version="v2")
+        logger.info("Created agent with prompt template (v2)")
     except Exception as e:
-        logger.error(f"Unexpected error creating agent: {str(e)}")
+        logger.error(f"Error creating chat agent: {str(e)}")
         raise
     
     # Return the agent executor

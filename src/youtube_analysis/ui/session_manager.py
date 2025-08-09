@@ -413,6 +413,12 @@ class StreamlitSessionManager:
         # Clear subtitle data
         StreamlitSessionManager.clear_subtitle_data()
         
+        # Run garbage collector to promptly free memory after heavy analyses
+        try:
+            gc.collect()
+        except Exception:
+            pass
+
         logger.info("Reset session state for new analysis")
     
     @staticmethod
