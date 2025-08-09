@@ -15,6 +15,7 @@ import time
 import random
 import ssl
 import urllib3
+import os
 from typing import Optional, List, Dict, Any, Tuple, Union
 from dataclasses import dataclass, field
 from enum import Enum
@@ -22,6 +23,8 @@ from contextlib import asynccontextmanager
 import re
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api import (
     TranscriptsDisabled,
@@ -141,6 +144,33 @@ class RobustTranscriptFetcher:
         # Prepare HTTP session for libraries that allow injection (e.g., youtube_transcript_api>=1.0)
         self._http_session = requests.Session()
         self.ssl_config.configure_requests_session(self._http_session)
+        # Add browser-like headers to avoid empty/blocked responses in some environments (e.g., Railway)
+        self._http_session.headers.update({
+            "User-Agent": os.getenv(
+                "YOUTUBE_HTTP_USER_AGENT",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": os.getenv(
+                "YOUTUBE_HTTP_ACCEPT_LANGUAGE",
+                "en-US,en;q=0.9,ta;q=0.6"
+            ),
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+        })
+        # Mount retry adapter for transient errors like 429/5xx
+        retry_config = Retry(
+            total=3,
+            connect=3,
+            read=3,
+            backoff_factor=0.6,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods={"GET", "HEAD"},
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry_config)
+        self._http_session.mount("https://", adapter)
+        self._http_session.mount("http://", adapter)
         
         # Circuit breaker states for each source
         self.circuit_breakers: Dict[TranscriptSource, CircuitBreakerState] = {
