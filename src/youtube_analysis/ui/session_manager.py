@@ -395,6 +395,12 @@ class StreamlitSessionManager:
         guest_count = StreamlitSessionManager.get_state("guest_analysis_count", 0)
         user_obj = StreamlitSessionManager.get_state("user")
         show_auth_flag = StreamlitSessionManager.get_state("show_auth", False)
+        # Preserve current user-selected settings (e.g., chosen model, temperature)
+        preserved_settings = None
+        try:
+            preserved_settings = StreamlitSessionManager.get_settings().copy()
+        except Exception:
+            preserved_settings = None
         
         # Clear all session state
         st.session_state.clear()
@@ -406,6 +412,9 @@ class StreamlitSessionManager:
         if user_obj is not None:
             StreamlitSessionManager.set_state("user", user_obj)
         StreamlitSessionManager.set_state("show_auth", show_auth_flag)
+        # Restore previously selected settings if available, so UI choices persist across analyses
+        if preserved_settings is not None:
+            StreamlitSessionManager.set_state("settings", preserved_settings)
         
         # Initialize all states
         StreamlitSessionManager.initialize_all_states()

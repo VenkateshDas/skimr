@@ -543,7 +543,10 @@ class RobustTranscriptFetcher:
     ) -> TranscriptResult:
         """Try downloading manually created subtitles using yt-dlp.
 
-        If available, parse the first preferred language match, else any manual track.
+        Always prefer the video's original language for manual captions. If manual
+        captions in the video's language (including region variants like en-US)
+        are not available, do not fall back to other manual languages; allow the
+        overall strategy to continue to auto-generated/ASR fallbacks.
         """
         # Try probing for manual subtitles
         manual: Dict[str, Any] = {}
@@ -556,23 +559,16 @@ class RobustTranscriptFetcher:
             manual = {}
             video_lang = ""
 
-        # Build attempt list prioritizing the video's language first
+        # Build attempt list: only the video's language (including region variants)
         manual_lang_keys = list(manual.keys())
-        # Preferred languages that are actually available
-        preferred_langs_available = [lang for lang in (languages or []) if lang in manual_lang_keys]
         attempt_langs: List[str] = []
-        if video_lang and video_lang in manual_lang_keys:
-            attempt_langs.append(video_lang)
-        for lang in preferred_langs_available:
-            if lang not in attempt_langs:
-                attempt_langs.append(lang)
-        # Add any remaining manual languages
-        for lang in manual_lang_keys:
-            if lang not in attempt_langs:
-                attempt_langs.append(lang)
-        # If we couldn't probe languages, fall back to a sane default priority (video language first if known)
+        if video_lang:
+            # Exact or regional variants first
+            matching_variants = [k for k in manual_lang_keys if k == video_lang or k.startswith(f"{video_lang}-")]
+            attempt_langs.extend(matching_variants)
+        # If there are no manual captions in the video's language, do not attempt other manual languages
         if not attempt_langs:
-            attempt_langs = [l for l in [video_lang, "en", "en-US", "en-GB", "ta", "de", "es", "fr"] if l]
+            raise TranscriptUnavailableError("Manual subtitles do not include the video's language")
 
         # Download the advertised manual subtitles, trying languages in order.
         # If we had no language list, try downloading all manual subtitles.
@@ -583,20 +579,6 @@ class RobustTranscriptFetcher:
                 created_files = await self._download_captions(
                     url=youtube_url, langs=attempt_langs, include_auto=False, out_dir=out_dir
                 )
-            if not created_files:
-                # As a last resort for manual subs, request all subtitles at once
-                loop = asyncio.get_event_loop()
-                opts = self._ytdlp_base_opts() | {
-                    "skip_download": True,
-                    "writesubtitles": True,
-                    "allsubtitles": True,
-                    "outtmpl": str(out_dir / "%(id)s.%(ext)s"),
-                }
-                try:
-                    await loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(opts).download([youtube_url]))
-                except Exception:
-                    pass
-                created_files = self._list_subtitle_files(out_dir)
             if not created_files:
                 raise TranscriptUnavailableError("Manual subtitles download yielded no files")
 
@@ -620,7 +602,7 @@ class RobustTranscriptFetcher:
                 transcript=transcript_text,
                 segments=segments,
                 source=TranscriptSource.MANUAL_CAPTIONS,
-                language=chosen_lang or self._detect_transcript_language(transcript_text) or (preferred_langs[0] if preferred_langs else None),
+                language=chosen_lang or self._detect_transcript_language(transcript_text),
             )
 
     async def _fetch_auto_captions_ytdlp(

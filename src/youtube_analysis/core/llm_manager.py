@@ -69,12 +69,19 @@ class LLMManager:
         
         # Determine provider based on explicit provider parameter or model name prefix
         if config.provider == "openai" or (not config.provider and config.model.startswith("gpt")):
-            llm = ChatOpenAI(
+            if config.model.startswith("gpt-5"):
+                llm = ChatOpenAI(
                 model=config.model,
-                temperature=config.temperature,
                 max_tokens=config.max_tokens,
                 timeout=config.timeout
             )
+            else:
+                llm = ChatOpenAI(
+                    model=config.model,
+                    temperature=config.temperature,
+                    max_tokens=config.max_tokens,
+                    timeout=config.timeout
+                )
         elif config.provider == "anthropic" or (not config.provider and config.model.startswith("claude")):
             llm = ChatAnthropic(
                 model=config.model,
@@ -135,11 +142,21 @@ class LLMManager:
         
         # Use explicit provider if specified, otherwise infer from model name
         if config.provider == "openai" or (not config.provider and config.model.startswith("gpt")):
-            llm = LLM(
-                model=config.model,
-                temperature=config.temperature,
-                api_key=os.getenv("OPENAI_API_KEY")
-            )
+            # Special handling for GPT-5 family in CrewAI via LiteLLM
+            # Use a fixed OpenAI model id and drop unsupported params to avoid 400 errors
+            if config.model.startswith("gpt-5"):
+                llm = LLM(
+                    model=f"openai/{config.model}",
+                    api_key=os.getenv("OPENAI_API_KEY"),
+                    drop_params=True,
+                    additional_drop_params=["stop", "temperature"],
+                )
+            else:
+                llm = LLM(
+                    model=f"openai/{config.model}",
+                    temperature=config.temperature,
+                    api_key=os.getenv("OPENAI_API_KEY")
+                )
         elif config.provider == "anthropic" or (not config.provider and config.model.startswith("claude")):
             llm = LLM(
                 model=f"anthropic/{config.model}",
