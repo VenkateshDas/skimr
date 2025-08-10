@@ -298,8 +298,54 @@ class RobustTranscriptFetcher:
                 except Exception as e:
                     logger.warning(f"Failed to configure Webshare proxy: {e}")
             
-            # Newer API supports passing an HTTP session
-            return YouTubeTranscriptApi(http_client=self._http_session)  # type: ignore[call-arg]
+            # Newer API supports passing an HTTP session; build a fresh session with optional rotation
+            session = requests.Session()
+            # Copy base SSL settings
+            self.ssl_config.configure_requests_session(session)
+            # Configure headers similar to the base session
+            try:
+                session.headers.update(self._http_session.headers)
+            except Exception:
+                pass
+            # Mount retry adapter
+            try:
+                retry_config = Retry(
+                    total=3,
+                    connect=3,
+                    read=3,
+                    backoff_factor=0.6,
+                    status_forcelist=[429, 500, 502, 503, 504],
+                    allowed_methods={"GET", "HEAD"},
+                    raise_on_status=False,
+                )
+                adapter = HTTPAdapter(max_retries=retry_config)
+                session.mount("https://", adapter)
+                session.mount("http://", adapter)
+            except Exception:
+                pass
+
+            # Apply proxy rotation if provided
+            try:
+                rotating = os.getenv("ROTATING_PROXIES", "").strip()
+                proxy_choice: Optional[str] = None
+                if rotating:
+                    candidates = [p.strip() for p in rotating.split(",") if p.strip()]
+                    if candidates:
+                        proxy_choice = random.choice(candidates)
+                proxy_choice = proxy_choice or os.getenv("YOUTUBE_PROXY_HTTPS") or os.getenv("YOUTUBE_PROXY_HTTP")
+                if proxy_choice:
+                    proxies: Dict[str, str] = {}
+                    if proxy_choice.startswith("http"):
+                        # Apply to both schemes; requests will pick appropriate
+                        proxies["http"] = proxy_choice
+                        proxies["https"] = proxy_choice
+                    else:
+                        proxies["https"] = proxy_choice
+                    session.proxies.update(proxies)
+            except Exception:
+                pass
+
+            return YouTubeTranscriptApi(http_client=session)  # type: ignore[call-arg]
         except TypeError:
             # Older versions don't accept constructor args, return class for static usage
             return YouTubeTranscriptApi
@@ -480,6 +526,25 @@ class RobustTranscriptFetcher:
         try:
             base = self.ssl_config.apply_yt_dlp_cookies(base)
         except Exception:
+            pass
+        # Apply proxy settings for yt-dlp if provided via env
+        try:
+            rotating = os.getenv("ROTATING_PROXIES", "").strip()
+            proxy_from_rotating: Optional[str] = None
+            if rotating:
+                candidates = [p.strip() for p in rotating.split(",") if p.strip()]
+                if candidates:
+                    proxy_from_rotating = random.choice(candidates)
+
+            ytdlp_proxy = proxy_from_rotating or os.getenv("YTDLP_PROXY")
+            if not ytdlp_proxy:
+                # Fallback to general YouTube proxy envs
+                ytdlp_proxy = os.getenv("YOUTUBE_PROXY_HTTPS") or os.getenv("YOUTUBE_PROXY_HTTP")
+
+            if ytdlp_proxy:
+                base["proxy"] = ytdlp_proxy
+        except Exception:
+            # Do not fail if proxy parsing fails
             pass
         return base
 

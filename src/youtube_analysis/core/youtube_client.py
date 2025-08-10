@@ -5,6 +5,7 @@ import asyncio
 from typing import Dict, Any, Optional, Tuple, List
 import requests
 from dataclasses import dataclass
+import os
 import yt_dlp
 
 from .cache_manager import CacheManager
@@ -106,6 +107,19 @@ class YouTubeClient:
                 # Dev fallback: use oEmbed endpoint via requests session with SSL verify disabled
                 session = requests.Session()
                 self.ssl_config.configure_requests_session(session)
+                # Respect proxy envs for fallback request
+                try:
+                    http_proxy = os.getenv("YOUTUBE_PROXY_HTTP")
+                    https_proxy = os.getenv("YOUTUBE_PROXY_HTTPS")
+                    proxies = {}
+                    if http_proxy:
+                        proxies["http"] = http_proxy
+                    if https_proxy:
+                        proxies["https"] = https_proxy
+                    if proxies:
+                        session.proxies.update(proxies)
+                except Exception:
+                    pass
                 oembed_url = 'https://www.youtube.com/oembed'
                 resp = session.get(oembed_url, params={'url': url, 'format': 'json'}, timeout=10)
                 title = f'YouTube Video {video_id}'

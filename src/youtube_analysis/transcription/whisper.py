@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Union
 import requests
+import random
 import re
 import math
 
@@ -249,6 +250,24 @@ class WhisperTranscriber(BaseTranscriber):
             ssl_config = get_ssl_config()
             base_opts = ssl_config.configure_yt_dlp_options(base_opts)
             base_opts = ssl_config.apply_yt_dlp_cookies(base_opts)
+            # Apply proxy settings for yt-dlp if provided via env
+            try:
+                rotating = os.getenv("ROTATING_PROXIES", "").strip()
+                proxy_from_rotating: Optional[str] = None
+                if rotating:
+                    candidates = [p.strip() for p in rotating.split(",") if p.strip()]
+                    if candidates:
+                        proxy_from_rotating = random.choice(candidates)
+
+                ytdlp_proxy = proxy_from_rotating or os.getenv("YTDLP_PROXY")
+                if not ytdlp_proxy:
+                    # Fallback to general YouTube proxy envs
+                    ytdlp_proxy = os.getenv("YOUTUBE_PROXY_HTTPS") or os.getenv("YOUTUBE_PROXY_HTTP")
+
+                if ytdlp_proxy:
+                    base_opts["proxy"] = ytdlp_proxy
+            except Exception:
+                pass
 
             # Try multiple player clients and user agents to bypass SABR/app restrictions
             attempts = [
@@ -347,6 +366,19 @@ class WhisperTranscriber(BaseTranscriber):
         last_exc = None
         session = requests.Session()
         get_ssl_config().configure_requests_session(session)
+        # Apply proxies to Piped fallback as well
+        try:
+            http_proxy = os.getenv("YOUTUBE_PROXY_HTTP")
+            https_proxy = os.getenv("YOUTUBE_PROXY_HTTPS")
+            proxies = {}
+            if http_proxy:
+                proxies["http"] = http_proxy
+            if https_proxy:
+                proxies["https"] = https_proxy
+            if proxies:
+                session.proxies.update(proxies)
+        except Exception:
+            pass
         for base in candidates:
             try:
                 streams_url = f"{base}/api/v1/streams/{video_id}"

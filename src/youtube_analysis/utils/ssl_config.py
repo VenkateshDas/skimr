@@ -142,6 +142,14 @@ class SSLConfig:
             })
             logger.debug("yt-dlp configured with aggressive SSL bypass options")
         
+        # Apply proxy for yt-dlp if provided via env (kept here for reuse)
+        try:
+            proxy = os.getenv("YTDLP_PROXY") or os.getenv("YOUTUBE_PROXY_HTTPS") or os.getenv("YOUTUBE_PROXY_HTTP")
+            if proxy:
+                ydl_opts["proxy"] = proxy
+        except Exception:
+            pass
+        
         return ydl_opts
     
     def configure_requests_session(self, session):
