@@ -398,8 +398,8 @@ class RobustTranscriptFetcher:
         # 1) Try manual subtitles via yt-dlp
         # 2) Try auto-generated subtitles via yt-dlp (preferred languages, then any)
         # 3) Fallback to Whisper transcription (order optimized by video duration)
+        # Per requirement: only use auto-generated captions for the video's language
         strategies = [
-            (TranscriptSource.MANUAL_CAPTIONS, self._fetch_manual_captions_ytdlp),
             (TranscriptSource.AUTO_GENERATED, self._fetch_auto_captions_ytdlp),
         ]
         
@@ -545,10 +545,11 @@ class RobustTranscriptFetcher:
         created_all: List[Path] = []
         loop = asyncio.get_event_loop()
         for lang in langs:
+            # Only write the requested subtitle kind
             opts = self._ytdlp_base_opts() | {
                 "skip_download": True,
-                "writesubtitles": True,
-                "writeautomaticsub": include_auto,
+                "writesubtitles": False if include_auto else True,
+                "writeautomaticsub": True if include_auto else False,
                 "subtitleslangs": [lang],
                 # Let yt-dlp output vtt or srt; we parse both
                 # "convertsubtitles": "srt",
@@ -660,10 +661,10 @@ class RobustTranscriptFetcher:
         languages: List[str],
         source: TranscriptSource,
     ) -> TranscriptResult:
-        """Try auto-generated subtitles across languages via yt-dlp.
+        """Download only auto-generated subtitles for the video's language via yt-dlp.
 
-        - Prefer preferred languages; else try video language; else any available (limited count)
-        - If probe fails, try common variants
+        This strictly attempts the video's detected language only and does not
+        try other languages, to avoid rate limits and cookie prompts.
         """
         video_lang = ""
         auto: Dict[str, Any] = {}
@@ -675,25 +676,15 @@ class RobustTranscriptFetcher:
             video_lang = ""
             auto = {}
 
-        preferred_langs = list(dict.fromkeys(languages or ["en"]))
         available_auto_langs = list(auto.keys()) if auto else []
 
+        # Only attempt the video's language; do not try any others
         attempt_langs: List[str] = []
-        # Prioritize the video's language first if it exists among auto captions
         if video_lang and video_lang in available_auto_langs:
-            attempt_langs.append(video_lang)
-        # Then preferred languages present in available auto
-        for lang in preferred_langs:
-            if lang in available_auto_langs and lang not in attempt_langs:
-                attempt_langs.append(lang)
-        for lang in available_auto_langs:
-            if lang not in attempt_langs:
-                attempt_langs.append(lang)
-            if len(attempt_langs) >= 5:
-                break
-        if not attempt_langs:
-            # Blind attempts if we couldn't list
-            attempt_langs = [l for l in [video_lang, "en", "en-US"] if l]
+            attempt_langs = [video_lang]
+        else:
+            # If auto captions are not available in the video's language, do not try other languages
+            raise TranscriptUnavailableError("Auto-generated subtitles not available in the video's language")
 
         with tempfile.TemporaryDirectory() as tmpdir:
             out_dir = Path(tmpdir)
