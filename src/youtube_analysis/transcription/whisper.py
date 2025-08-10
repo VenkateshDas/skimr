@@ -245,9 +245,10 @@ class WhisperTranscriber(BaseTranscriber):
                 "geo_bypass": True,
             }
 
-            # Configure SSL settings
+            # Configure SSL and cookies/headers
             ssl_config = get_ssl_config()
             base_opts = ssl_config.configure_yt_dlp_options(base_opts)
+            base_opts = ssl_config.apply_yt_dlp_cookies(base_opts)
 
             # Try multiple player clients and user agents to bypass SABR/app restrictions
             attempts = [

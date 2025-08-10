@@ -467,7 +467,7 @@ class RobustTranscriptFetcher:
     
     # ---------- yt-dlp based subtitle helpers ----------
     def _ytdlp_base_opts(self) -> Dict[str, Any]:
-        return {
+        base = {
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
@@ -476,6 +476,12 @@ class RobustTranscriptFetcher:
             "sleep_requests": 1,
             "max_sleep_requests": 3,
         }
+        # Apply SSL and cookie settings
+        try:
+            base = self.ssl_config.apply_yt_dlp_cookies(base)
+        except Exception:
+            pass
+        return base
 
     def _ytdlp_probe_info(self, url: str) -> Dict[str, Any]:
         # Try a clean probe first; if certain app restriction errors appear, retry with forced web client UA

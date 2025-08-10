@@ -7,6 +7,9 @@ that commonly occur in development environments or systems with corporate firewa
 
 import ssl
 import os
+import base64
+import tempfile
+from pathlib import Path
 import certifi
 import urllib3
 from typing import Optional
@@ -27,6 +30,7 @@ class SSLConfig:
         """
         self.verify_ssl = self._determine_ssl_verification(verify_ssl)
         self.ssl_context = None
+        self._cookies_file_path: Optional[Path] = None
         self._setup_ssl_context()
         
     def _determine_ssl_verification(self, verify_ssl: Optional[bool]) -> bool:
@@ -146,6 +150,81 @@ class SSLConfig:
             session.verify = False
             logger.debug("Requests session configured to bypass SSL verification")
         return session
+
+    def _ensure_cookies_file_from_env(self) -> Optional[Path]:
+        """Create a cookies.txt file from environment variables if provided.
+
+        Supported env vars:
+        - YTDLP_COOKIES_FILE: Absolute path to an existing cookies.txt file
+        - YTDLP_COOKIES: Raw Netscape cookies.txt content
+        - YTDLP_COOKIES_BASE64: Base64-encoded Netscape cookies.txt content
+        """
+        # If we've already materialized a cookies file, reuse it
+        if self._cookies_file_path and self._cookies_file_path.exists():
+            return self._cookies_file_path
+
+        # Direct file path provided
+        file_path = os.getenv("YTDLP_COOKIES_FILE")
+        if file_path:
+            p = Path(file_path)
+            if p.exists():
+                self._cookies_file_path = p
+                logger.info(f"Using yt-dlp cookies file from YTDLP_COOKIES_FILE: {p}")
+                return p
+            logger.warning(f"YTDLP_COOKIES_FILE set but file not found: {p}")
+
+        # Raw cookies content
+        raw = os.getenv("YTDLP_COOKIES")
+        b64 = os.getenv("YTDLP_COOKIES_BASE64")
+        content: Optional[bytes] = None
+        if raw:
+            content = raw.encode("utf-8")
+        elif b64:
+            try:
+                content = base64.b64decode(b64)
+            except Exception as e:
+                logger.warning(f"Failed to decode YTDLP_COOKIES_BASE64: {e}")
+
+        if content:
+            try:
+                tmp_dir = Path(os.getenv("YTDLP_COOKIES_DIR", tempfile.gettempdir()))
+                tmp_dir.mkdir(parents=True, exist_ok=True)
+                path = tmp_dir / "yt_cookies.txt"
+                path.write_bytes(content)
+                self._cookies_file_path = path
+                logger.info(f"Materialized yt-dlp cookies to {path}")
+                return path
+            except Exception as e:
+                logger.warning(f"Failed to write cookies file: {e}")
+
+        return None
+
+    def apply_yt_dlp_cookies(self, ydl_opts: dict) -> dict:
+        """Inject cookies and headers into yt-dlp options based on env vars.
+
+        - Adds 'cookiefile' pointing to a cookies.txt if provided via env
+        - Applies YTDLP_ACCEPT_LANGUAGE and YTDLP_USER_AGENT to http_headers if set
+        """
+        try:
+            cookies_path = self._ensure_cookies_file_from_env()
+            if cookies_path:
+                ydl_opts["cookiefile"] = str(cookies_path)
+
+            # Optionally override headers
+            headers = ydl_opts.get("http_headers") or {}
+            accept_lang = os.getenv("YTDLP_ACCEPT_LANGUAGE")
+            if accept_lang:
+                headers["Accept-Language"] = accept_lang
+            user_agent = os.getenv("YTDLP_USER_AGENT")
+            if user_agent:
+                headers["User-Agent"] = user_agent
+            if headers:
+                ydl_opts["http_headers"] = headers
+
+        except Exception as e:
+            logger.warning(f"Failed to apply yt-dlp cookies/headers: {e}")
+
+        return ydl_opts
 
 
 # Global SSL configuration instance
