@@ -1,6 +1,7 @@
 colorlog==6.9.0
 crewai==0.121.1
 fastapi==0.115.12
+uvicorn[standard]>=0.30.0
 langchain==0.3.25
 langchain_anthropic==0.3.14
 langchain_community==0.3.24
@@ -22,6 +23,7 @@ reportlab==4.4.1
 requests==2.32.3
 langsmith==0.3.45
 streamlit==1.44.1
+nicegui>=2.5.0
 supabase==2.15.2
 youtube_transcript_api==1.0.3
 yt_dlp==2025.5.22
