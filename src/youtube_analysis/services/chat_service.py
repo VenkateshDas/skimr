@@ -180,19 +180,35 @@ class ChatService:
         if video_id in self._chat_agents:
             return self._chat_agents[video_id]
         
-        # Get video data and analysis result
+        # Try to get video data from cache first
         video_data = await self.cache_repo.get_video_data(video_id)
-        if not video_data:
-            logger.error(f"No video data found for {video_id}")
-            return None
+        if video_data:
+            # Get analysis result for context
+            analysis_result = await self.cache_repo.get_analysis_result(video_id)
+            
+            # Setup chat using cached video data
+            chat_details = await self.setup_chat(video_data, analysis_result)
+            if not chat_details or "agent" not in chat_details:
+                logger.error(f"Failed to setup chat agent for {video_id} using cached video data")
+                return None
+            
+            # Cache the agent
+            self._chat_agents[video_id] = chat_details["agent"]
+            return chat_details["agent"]
         
-        # Get analysis result for context
+        # Fallback: derive YouTube URL and build context even if video_data isn't cached
+        logger.warning(f"No video data in cache for {video_id}, attempting fallback setup")
         analysis_result = await self.cache_repo.get_analysis_result(video_id)
+        youtube_url = None
+        if analysis_result and hasattr(analysis_result, "youtube_url") and analysis_result.youtube_url:
+            youtube_url = analysis_result.youtube_url
+        else:
+            # Last-resort URL construction
+            youtube_url = f"https://youtu.be/{video_id}"
         
-        # Setup chat
-        chat_details = await self.setup_chat(video_data, analysis_result)
+        chat_details = await self.setup_chat(youtube_url, analysis_result)
         if not chat_details or "agent" not in chat_details:
-            logger.error(f"Failed to setup chat agent for {video_id}")
+            logger.error(f"Failed to setup chat agent for {video_id} via fallback path")
             return None
         
         # Cache the agent
@@ -256,6 +272,12 @@ class ChatService:
                 if not video_data:
                     logger.info(f"Fetching video data for {video_id}")
                     video_data = await self.youtube_repo.get_video_data(youtube_url)
+                    # Store fetched video data in cache for future requests
+                    try:
+                        if video_data:
+                            await self.cache_repo.store_video_data(video_data)
+                    except Exception as cache_err:
+                        logger.warning(f"Failed to cache fetched video data for {video_id}: {str(cache_err)}")
             else:
                 # Unexpected type
                 logger.error(f"Unexpected type for youtube_url_or_data: {type(youtube_url_or_data)}")
