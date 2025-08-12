@@ -19,7 +19,6 @@ from pydub import AudioSegment
 from .base import BaseTranscriber, TranscriptUnavailable
 from .models import Transcript, TranscriptSegment
 from ..utils.subtitle_utils import chunk_words_to_cues
-from ..utils.ssl_config import get_ssl_config
 
 logger = logging.getLogger("youtube_analysis.transcription")
 
@@ -246,28 +245,7 @@ class WhisperTranscriber(BaseTranscriber):
                 "geo_bypass": True,
             }
 
-            # Configure SSL and cookies/headers
-            ssl_config = get_ssl_config()
-            base_opts = ssl_config.configure_yt_dlp_options(base_opts)
-            base_opts = ssl_config.apply_yt_dlp_cookies(base_opts)
-            # Apply proxy settings for yt-dlp if provided via env
-            try:
-                rotating = os.getenv("ROTATING_PROXIES", "").strip()
-                proxy_from_rotating: Optional[str] = None
-                if rotating:
-                    candidates = [p.strip() for p in rotating.split(",") if p.strip()]
-                    if candidates:
-                        proxy_from_rotating = random.choice(candidates)
-
-                ytdlp_proxy = proxy_from_rotating or os.getenv("YTDLP_PROXY")
-                if not ytdlp_proxy:
-                    # Fallback to general YouTube proxy envs
-                    ytdlp_proxy = os.getenv("YOUTUBE_PROXY_HTTPS") or os.getenv("YOUTUBE_PROXY_HTTP")
-
-                if ytdlp_proxy:
-                    base_opts["proxy"] = ytdlp_proxy
-            except Exception:
-                pass
+            # No custom SSL tweaks
 
             # Try multiple player clients and user agents to bypass SABR/app restrictions
             attempts = [

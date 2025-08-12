@@ -1,4 +1,4 @@
-"""Service for transcript operations."""
+"""Service for transcript operations using robust YouTube transcript fetching."""
 
 from typing import Optional, Tuple, List, Dict, Any
 import asyncio
@@ -6,6 +6,7 @@ import re
 from ..models import VideoData, TranscriptSegment
 from ..transcription import WhisperTranscriber, TranscriptUnavailable
 from ..repositories import CacheRepository, YouTubeRepository
+from ..core.transcript_fetcher import RobustTranscriptFetcher, parse_video_id
 from ..utils.logging import get_logger
 from ..utils.language_utils import get_language_name, validate_language_code
 
@@ -19,35 +20,59 @@ class TranscriptService:
         self.cache_repo = cache_repository
         self.youtube_repo = youtube_repository
         self.whisper_transcriber = WhisperTranscriber()
-        logger.info("Initialized TranscriptService")
+        # Use the repository's CacheManager instance
+        self.robust_fetcher = RobustTranscriptFetcher(cache_manager=cache_repository.cache_manager)
+        logger.info("Initialized TranscriptService with robust transcript fetching")
     
-    async def get_transcript(self, youtube_url: str, use_cache: bool = True) -> Optional[str]:
-        """Get plain transcript for a video."""
-        video_data = await self._get_video_data(youtube_url, use_cache)
-        return video_data.transcript if video_data else None
+    async def get_transcript(self, youtube_url: str, use_cache: bool = True, preferred_language: Optional[str] = None) -> Optional[str]:
+        """Get plain transcript for a video using robust fetching."""
+        try:
+            video_id = parse_video_id(youtube_url)
+            result = await self.robust_fetcher.fetch_transcript(
+                video_id=video_id,
+                youtube_url=youtube_url,
+                use_cache=use_cache,
+                preferred_language=preferred_language,
+                fallback_to_whisper=False
+            )
+            return result.transcript if result.success else None
+        except Exception as e:
+            logger.error(f"Error getting transcript: {e}")
+            return None
     
     async def get_timestamped_transcript(
         self, 
         youtube_url: str, 
-        use_cache: bool = True
+        use_cache: bool = True,
+        preferred_language: Optional[str] = None
     ) -> Tuple[Optional[str], Optional[List[Dict[str, Any]]]]:
-        """Get timestamped transcript and segment list."""
-        video_data = await self._get_video_data(youtube_url, use_cache)
-        if not video_data:
+        """Get timestamped transcript and segment list using robust fetching."""
+        try:
+            video_id = parse_video_id(youtube_url)
+            result = await self.robust_fetcher.fetch_transcript(
+                video_id=video_id,
+                youtube_url=youtube_url,
+                use_cache=use_cache,
+                preferred_language=preferred_language,
+                fallback_to_whisper=False
+            )
+            
+            if result.success and result.segments:
+                # Format with timestamps
+                formatted_transcript = []
+                for segment in result.segments:
+                    seconds = int(segment['start'])
+                    minutes, seconds = divmod(seconds, 60)
+                    timestamp = f"{minutes:02d}:{seconds:02d}"
+                    formatted_transcript.append(f"[{timestamp}] {segment['text']}")
+                
+                formatted_text = "\n".join(formatted_transcript)
+                return formatted_text, result.segments
+            
             return None, None
-        
-        transcript_list = None
-        if video_data.transcript_segments:
-            transcript_list = [
-                {
-                    "text": seg.text,
-                    "start": seg.start,
-                    "duration": seg.duration
-                }
-                for seg in video_data.transcript_segments
-            ]
-        
-        return video_data.timestamped_transcript, transcript_list
+        except Exception as e:
+            logger.error(f"Error getting timestamped transcript: {e}")
+            return None, None
     
     async def get_formatted_transcripts(
         self,
@@ -93,72 +118,37 @@ class TranscriptService:
         
         return timestamped_transcript, transcript_segments
     
-    def get_transcript_sync(self, youtube_url: str, use_cache: bool = True) -> Optional[List[Dict[str, Any]]]:
+    def get_transcript_sync(self, youtube_url: str, use_cache: bool = True, preferred_language: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
         """
-        Synchronous method to get transcript, used as a fallback for the webapp.
+        Synchronous method to get transcript using robust fetching.
         
         Args:
             youtube_url: The YouTube video URL
             use_cache: Whether to use cached data
+            preferred_language: Preferred language for transcript
             
         Returns:
             List of transcript segments or None if error
         """
         try:
-            # Get video data synchronously
-            video_data = self.get_video_data_sync(youtube_url, use_cache)
+            video_id = parse_video_id(youtube_url)
             
-            # If we have valid video data with transcript segments, use it
-            if video_data and video_data.transcript_segments:
-                # Convert transcript segments to dictionary format
-                transcript_list = [
-                    {
-                        "text": seg.text,
-                        "start": seg.start,
-                        "duration": seg.duration
-                    }
-                    for seg in video_data.transcript_segments
-                ]
-                logger.info(f"Successfully retrieved transcript segments from video data for {youtube_url}")
-                return transcript_list
+            # Use robust fetcher directly
+            result = asyncio.run(self.robust_fetcher.fetch_transcript(
+                video_id=video_id,
+                youtube_url=youtube_url,
+                use_cache=use_cache,
+                preferred_language=preferred_language,
+                fallback_to_whisper=False
+            ))
             
-            # If no segments in video data, try direct YouTube API call
-            video_id = self.youtube_repo.extract_video_id(youtube_url)
-            if not video_id:
-                logger.error(f"Could not extract video ID from URL: {youtube_url}")
+            if result.success and result.segments:
+                logger.info(f"Successfully retrieved transcript segments using robust fetcher for {video_id}")
+                return result.segments
+            else:
+                logger.error(f"Robust fetcher failed for {video_id}: {result.error}")
                 return None
-            
-            # Try using YouTubeTranscriptApi directly
-            try:
-                from youtube_transcript_api import YouTubeTranscriptApi
-                transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'de', 'ta', 'es', 'fr'])
-                logger.info(f"Retrieved transcript directly using YouTubeTranscriptApi for {video_id}")
-                return transcript_list
-            except Exception as yt_api_error:
-                logger.error(f"Error using YouTubeTranscriptApi directly: {str(yt_api_error)}")
                 
-                # Try to get transcript asynchronously as a last resort
-                try:
-                    transcript_text = asyncio.run(self.get_transcript(youtube_url, use_cache))
-                    if transcript_text:
-                        # Create a simple transcript segment with the full text
-                        logger.info(f"Created simple transcript segment from plain text for {video_id}")
-                        return [{"text": transcript_text, "start": 0.0, "duration": 0.0}]
-                    else:
-                        # Try Whisper transcription as final fallback
-                        logger.info(f"Attempting Whisper transcription as final fallback for {video_id}")
-                        whisper_result = asyncio.run(self.get_transcript_with_whisper(youtube_url, use_cache=use_cache))
-                        if whisper_result and len(whisper_result) == 2:
-                            _, segments = whisper_result
-                            if segments:
-                                logger.info(f"Successfully transcribed {video_id} with Whisper")
-                                return segments
-                            
-                        logger.error(f"Could not retrieve transcript for {video_id}")
-                        return None
-                except Exception as async_error:
-                    logger.error(f"Error in async transcript retrieval fallback: {str(async_error)}")
-                    return None
         except Exception as e:
             logger.error(f"Error in get_transcript_sync: {str(e)}")
             return None
@@ -430,18 +420,7 @@ class TranscriptService:
                 video_data.transcript, 
                 video_duration
             )
-        # If no transcript at all, try Whisper fallback with selected provider
-        whisper_result = await self.get_transcript_with_whisper(
-            youtube_url=youtube_url,
-            language="en",
-            model_name=None,
-            use_cache=use_cache,
-            transcription_model=transcription_model
-        )
-        if whisper_result and len(whisper_result) == 2:
-            _, segments = whisper_result
-            if segments:
-                return segments
+        # If no transcript at all, do not use Whisper fallback
         return []
 
     def get_or_create_segments_sync(self, youtube_url: str, use_cache: bool = True, transcription_model: str = "openai") -> List[Dict[str, Any]]:

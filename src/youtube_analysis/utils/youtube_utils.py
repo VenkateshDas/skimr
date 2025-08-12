@@ -75,7 +75,7 @@ def cache_transcription(video_id: str, transcript: str) -> bool:
 
 def extract_video_id(url: str) -> Optional[str]:
     """
-    Extract the video ID from a YouTube URL.
+    Extract the video ID from a YouTube URL using robust parser.
     
     Args:
         url: YouTube URL or video ID
@@ -84,25 +84,9 @@ def extract_video_id(url: str) -> Optional[str]:
         Video ID or None if invalid URL
     """
     try:
-        # Check if the input is already a video ID (11 characters, alphanumeric with _ and -)
-        if re.match(r'^[0-9A-Za-z_-]{11}$', url):
-            logger.info(f"Input appears to be a video ID already: {url}")
-            return url
-            
-        # Handle various YouTube URL formats
-        patterns = [
-            r'(?:v=|\/)([0-9A-Za-z_-]{11}).*',  # Standard and shortened
-            r'(?:embed\/)([0-9A-Za-z_-]{11})',  # Embed URLs
-            r'(?:watch\?v=)([0-9A-Za-z_-]{11})',  # Standard watch URLs
-            r'(?:youtu\.be\/)([0-9A-Za-z_-]{11})'  # youtu.be URLs
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, url)
-            if match:
-                return match.group(1)
-        
-        # If we get here, no pattern matched
+        from ..core.transcript_fetcher import parse_video_id
+        return parse_video_id(url)
+    except ValueError:
         logger.warning(f"Could not extract video ID from URL: {url}")
         return None
     except Exception as e:

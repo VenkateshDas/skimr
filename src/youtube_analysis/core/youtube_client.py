@@ -1,4 +1,4 @@
-"""Optimized YouTube client with async support and robust transcript fetching."""
+"""Optimized YouTube client with robust transcript fetching based on test_yt.py."""
 
 import re
 import asyncio
@@ -9,8 +9,7 @@ import os
 import yt_dlp
 
 from .cache_manager import CacheManager
-from .transcript_fetcher import RobustTranscriptFetcher, LanguagePreference, TranscriptResult
-from ..utils.ssl_config import get_ssl_config
+from .transcript_fetcher import RobustTranscriptFetcher, LanguagePreference, TranscriptResult, parse_video_id
 from ..utils.logging import get_logger
 
 logger = get_logger("youtube_client")
@@ -32,7 +31,7 @@ class YouTubeClient:
         self, 
         cache_manager: Optional[CacheManager] = None,
         language_preferences: Optional[LanguagePreference] = None,
-        enable_whisper_fallback: bool = True,
+        enable_whisper_fallback: bool = False,
         max_retries: int = 3
     ):
         self.cache = cache_manager or CacheManager()
@@ -45,8 +44,7 @@ class YouTubeClient:
             max_retries=max_retries
         )
         
-        # SSL config for downstream decisions
-        self.ssl_config = get_ssl_config()
+        # No custom SSL configuration needed for local usage
         
         # Video ID extraction patterns
         self._video_patterns = [
@@ -58,16 +56,14 @@ class YouTubeClient:
         logger.info("Initialized YouTubeClient with robust transcript fetching")
     
     def extract_video_id(self, url: str) -> Optional[str]:
-        """Extract video ID from YouTube URL."""
+        """Extract video ID from YouTube URL using robust parser."""
         if not url:
             return None
         
-        for pattern in self._video_patterns:
-            match = re.search(pattern, url)
-            if match:
-                return match.group(1)
-        
-        return None
+        try:
+            return parse_video_id(url)
+        except ValueError:
+            return None
     
     async def get_video_info(self, url: str, use_cache: bool = True) -> Optional[VideoInfo]:
         """Get video information with caching."""
@@ -85,52 +81,21 @@ class YouTubeClient:
                 return VideoInfo(**cached)
         
         try:
-            # Prefer yt-dlp for rich metadata unless SSL is disabled
-            if self.ssl_config.verify_ssl:
-                ydl_opts = {
-                    'quiet': True,
-                    'no_warnings': True,
-                    'extract_flat': False,
-                }
-                ydl_opts = self.ssl_config.configure_yt_dlp_options(ydl_opts)
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=False)
-                    video_info = VideoInfo(
-                        video_id=video_id,
-                        title=info.get('title', f'YouTube Video {video_id}'),
-                        description=info.get('description', '')[:500] + ('...' if len(info.get('description', '')) > 500 else ''),
-                        duration=info.get('duration'),
-                        view_count=info.get('view_count'),
-                        upload_date=info.get('upload_date')
-                    )
-            else:
-                # Dev fallback: use oEmbed endpoint via requests session with SSL verify disabled
-                session = requests.Session()
-                self.ssl_config.configure_requests_session(session)
-                # Respect proxy envs for fallback request
-                try:
-                    http_proxy = os.getenv("YOUTUBE_PROXY_HTTP")
-                    https_proxy = os.getenv("YOUTUBE_PROXY_HTTPS")
-                    proxies = {}
-                    if http_proxy:
-                        proxies["http"] = http_proxy
-                    if https_proxy:
-                        proxies["https"] = https_proxy
-                    if proxies:
-                        session.proxies.update(proxies)
-                except Exception:
-                    pass
-                oembed_url = 'https://www.youtube.com/oembed'
-                resp = session.get(oembed_url, params={'url': url, 'format': 'json'}, timeout=10)
-                title = f'YouTube Video {video_id}'
-                description = ''
-                if resp.ok:
-                    data = resp.json()
-                    title = data.get('title', title)
+            # Use yt-dlp directly for metadata
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': False,
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
                 video_info = VideoInfo(
                     video_id=video_id,
-                    title=title,
-                    description=description,
+                    title=info.get('title', f'YouTube Video {video_id}'),
+                    description=info.get('description', '')[:500] + ('...' if len(info.get('description', '')) > 500 else ''),
+                    duration=info.get('duration'),
+                    view_count=info.get('view_count'),
+                    upload_date=info.get('upload_date')
                 )
             
             # Cache the result
@@ -148,7 +113,8 @@ class YouTubeClient:
         self, 
         url: str, 
         use_cache: bool = True,
-        preferred_language: Optional[str] = None
+        preferred_language: Optional[str] = None,
+        output_language: Optional[str] = None
     ) -> Optional[str]:
         """
         Get video transcript using robust fetching approach.
@@ -157,6 +123,7 @@ class YouTubeClient:
             url: YouTube video URL
             use_cache: Whether to use cached transcripts
             preferred_language: Preferred language code (e.g., 'en', 'de')
+            output_language: Target language for translation
             
         Returns:
             Transcript text or None if unavailable
@@ -172,6 +139,7 @@ class YouTubeClient:
                 youtube_url=url,
                 use_cache=use_cache,
                 preferred_language=preferred_language,
+                output_language=output_language,
                 fallback_to_whisper=self.enable_whisper_fallback
             )
             
@@ -190,7 +158,8 @@ class YouTubeClient:
         self, 
         url: str, 
         use_cache: bool = True,
-        preferred_language: Optional[str] = None
+        preferred_language: Optional[str] = None,
+        output_language: Optional[str] = None
     ) -> Tuple[Optional[str], Optional[List[Dict[str, Any]]]]:
         """
         Get transcript with timestamps using robust fetching approach.
@@ -199,6 +168,7 @@ class YouTubeClient:
             url: YouTube video URL
             use_cache: Whether to use cached transcripts
             preferred_language: Preferred language code
+            output_language: Target language for translation
             
         Returns:
             Tuple of (formatted transcript with timestamps, raw segment list)
@@ -214,6 +184,7 @@ class YouTubeClient:
                 youtube_url=url,
                 use_cache=use_cache,
                 preferred_language=preferred_language,
+                output_language=output_language,
                 fallback_to_whisper=self.enable_whisper_fallback
             )
             
@@ -242,7 +213,8 @@ class YouTubeClient:
         self,
         url: str,
         use_cache: bool = True,
-        preferred_language: Optional[str] = None
+        preferred_language: Optional[str] = None,
+        output_language: Optional[str] = None
     ) -> TranscriptResult:
         """
         Get detailed transcript result including metadata and source information.
@@ -251,6 +223,7 @@ class YouTubeClient:
             url: YouTube video URL
             use_cache: Whether to use cached transcripts
             preferred_language: Preferred language code
+            output_language: Target language for translation
             
         Returns:
             TranscriptResult with detailed information about the fetch operation
@@ -268,6 +241,7 @@ class YouTubeClient:
                 youtube_url=url,
                 use_cache=use_cache,
                 preferred_language=preferred_language,
+                output_language=output_language,
                 fallback_to_whisper=self.enable_whisper_fallback
             )
             
